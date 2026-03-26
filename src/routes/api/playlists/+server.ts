@@ -3,7 +3,7 @@ import { db } from "$lib/server/db";
 import { playlist } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
 import { XtreamApi } from "$lib/server/xtream";
-import { encrypt } from "$lib/server/crypto";
+import { encrypt, decrypt } from "$lib/server/crypto";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -19,8 +19,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     .from(playlist)
     .where(eq(playlist.userId, locals.user.id));
 
-  // Credentials are NOT returned — only safe fields
-  return json(rows);
+  return json(rows.map((r) => ({ ...r, serverUrl: decrypt(r.serverUrl) })));
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -45,7 +44,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     .values({
       userId: locals.user.id,
       name,
-      serverUrl: serverUrl.replace(/\/$/, ""),
+      serverUrl: encrypt(serverUrl.replace(/\/$/, "")),
       xtreamUsername: encrypt(xtreamUsername),
       xtreamPassword: encrypt(xtreamPassword),
     })
@@ -56,5 +55,5 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       createdAt: playlist.createdAt,
     });
 
-  return json(row, { status: 201 });
+  return json({ ...row, serverUrl: decrypt(row.serverUrl) }, { status: 201 });
 };

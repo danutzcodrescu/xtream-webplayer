@@ -1,9 +1,7 @@
 import { error } from "@sveltejs/kit";
-import { db } from "$lib/server/db";
-import { playlist } from "$lib/server/db/schema";
-import { eq } from "drizzle-orm";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
+import { encryptProxyToken, decryptProxyToken } from "$lib/server/crypto";
 import type { RequestHandler } from "./$types";
 
 // ── Per-user session cookie jar ───────────────────────────────────────────────
@@ -11,26 +9,6 @@ import type { RequestHandler } from "./$types";
 // Keyed on hostname (not full origin) so that cookies set on port 8080
 // are also sent when fetching segments on port 80.
 const cookieJar = new Map<string, string>();
-
-// ── Per-user trusted hostnames ────────────────────────────────────────────────
-// Hostnames seen inside manifests we've already proxied for a user.
-// This handles Xtream servers that redirect manifests to CDN/proxy hostnames
-// different from the registered playlist server URL.
-// Key: userId  Value: Set of trusted hostnames
-const trustedHostnames = new Map<string, Set<string>>();
-
-function addTrustedHostname(userId: string, hostname: string) {
-  let set = trustedHostnames.get(userId);
-  if (!set) {
-    set = new Set();
-    trustedHostnames.set(userId, set);
-  }
-  set.add(hostname);
-}
-
-function isTrustedHostname(userId: string, hostname: string): boolean {
-  return trustedHostnames.get(userId)?.has(hostname) ?? false;
-}
 
 function jarKey(userId: string, hostname: string) {
   return `${userId}:${hostname}`;
@@ -90,40 +68,22 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     return proxyManifest(api.liveStreamUrl(streamId), url.origin, userId);
   }
 
-  // ── Case 2: proxied manifest/segment request ──────────────────────────────
-  // url.searchParams.get() already URL-decodes — do NOT call decodeURIComponent again.
-  const targetUrl = url.searchParams.get("url");
-  if (!targetUrl) error(400, "url parameter required");
+  // ── Case 2: token-based proxied manifest/segment request ─────────────────
+  // The token was produced by rewriteManifest() and contains an AES-GCM-encrypted
+  // payload of { url, userId }. The upstream URL (which contains Xtream credentials)
+  // is never sent to the browser in plaintext.
+  const token = url.searchParams.get("token");
+  if (!token) error(400, "token parameter required");
 
-  // Security: only proxy to hostnames registered in this user's playlists.
-  // We match hostname only (not port) because Xtream servers often serve the
-  // initial manifest on a custom port but return segment URLs on port 80/443.
-  const userPlaylists = await db
-    .select({ serverUrl: playlist.serverUrl })
-    .from(playlist)
-    .where(eq(playlist.userId, userId));
-
-  let targetHostname: string;
+  let targetUrl: string;
   try {
-    targetHostname = new URL(targetUrl).hostname;
-  } catch {
-    error(400, "Invalid url parameter");
-  }
-
-  const allowedByPlaylist = userPlaylists.some((p) => {
-    try {
-      return new URL(p.serverUrl).hostname === targetHostname;
-    } catch {
-      return false;
-    }
-  });
-  if (!allowedByPlaylist && !isTrustedHostname(userId, targetHostname)) {
-    console.error(
-      "[stream] blocked proxy to",
-      targetHostname,
-      "— not in user playlists or manifests",
-    );
-    error(403, "Target server not in your playlists");
+    const payload = decryptProxyToken(token);
+    if (payload.userId !== userId) error(403, "Token user mismatch");
+    targetUrl = payload.url;
+  } catch (e) {
+    // Re-throw SvelteKit HTTP errors (e.g. the 403 above); only catch crypto failures.
+    if (e != null && typeof e === "object" && "status" in e) throw e;
+    error(400, "Invalid or tampered token");
   }
 
   return proxyUrl(targetUrl, url.origin, userId);
@@ -271,14 +231,8 @@ function rewriteManifest(
         absolute = base + trimmed;
       }
 
-      // Trust any hostname we encounter inside a manifest we've already proxied
-      try {
-        addTrustedHostname(userId, new URL(absolute).hostname);
-      } catch {
-        /* ignore */
-      }
-
-      return `${proxyOrigin}/api/stream?url=${encodeURIComponent(absolute)}`;
+      const token = encryptProxyToken(absolute, userId);
+      return `${proxyOrigin}/api/stream?token=${encodeURIComponent(token)}`;
     })
     .join("\n");
 }

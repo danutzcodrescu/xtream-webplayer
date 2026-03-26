@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/sqlite-proxy';
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 import * as schema from "./schema.js";
+import { encrypt } from "../crypto.js";
 
 const dbUrl = process.env.DATABASE_URL ?? "./data/iptv.db";
 
@@ -101,6 +102,27 @@ try {
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS "user_username_unique" ON "user"("username")');
 } catch {
   /* already exists */
+}
+
+// Migrate: encrypt any plaintext serverUrls left from before this change.
+// The encrypted format is always three colon-separated hex segments; a URL is not.
+try {
+  const rows = sqlite.prepare('SELECT id, serverUrl FROM "playlist"').all() as {
+    id: string;
+    serverUrl: string;
+  }[];
+  for (const row of rows) {
+    const parts = row.serverUrl.split(":");
+    const isEncrypted =
+      parts.length === 3 && parts.every((p) => /^[0-9a-f]+$/i.test(p));
+    if (!isEncrypted) {
+      sqlite
+        .prepare('UPDATE "playlist" SET serverUrl = ? WHERE id = ?')
+        .run(encrypt(row.serverUrl), row.id);
+    }
+  }
+} catch {
+  /* table doesn't exist yet on a brand-new install — nothing to migrate */
 }
 
 export const db = drizzle(

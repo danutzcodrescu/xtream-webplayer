@@ -27,7 +27,7 @@ export async function getPlaylistWithCreds(
   return {
     id: row.id,
     name: row.name,
-    serverUrl: row.serverUrl,
+    serverUrl: decrypt(row.serverUrl),
     username: decrypt(row.xtreamUsername),
     password: decrypt(row.xtreamPassword),
   };

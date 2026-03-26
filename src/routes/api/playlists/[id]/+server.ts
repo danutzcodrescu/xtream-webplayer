@@ -2,7 +2,7 @@ import { json, error } from "@sveltejs/kit";
 import { db } from "$lib/server/db";
 import { playlist } from "$lib/server/db/schema";
 import { and, eq } from "drizzle-orm";
-import { encrypt } from "$lib/server/crypto";
+import { encrypt, decrypt } from "$lib/server/crypto";
 import { invalidateEpgCache } from "$lib/server/epg";
 import type { RequestHandler } from "./$types";
 
@@ -19,7 +19,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
   const row = await getOwned(params.id, locals.user.id);
   if (!row) error(404);
   // Return safe fields only — credentials stay in the DB
-  return json({ id: row.id, name: row.name, serverUrl: row.serverUrl, createdAt: row.createdAt });
+  return json({ id: row.id, name: row.name, serverUrl: decrypt(row.serverUrl), createdAt: row.createdAt });
 };
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
@@ -34,7 +34,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
     .update(playlist)
     .set({
       ...(name && { name }),
-      ...(serverUrl && { serverUrl: serverUrl.replace(/\/$/, "") }),
+      ...(serverUrl && { serverUrl: encrypt(serverUrl.replace(/\/$/, "")) }),
       ...(xtreamUsername && { xtreamUsername: encrypt(xtreamUsername) }),
       ...(xtreamPassword && { xtreamPassword: encrypt(xtreamPassword) }),
     })
@@ -42,7 +42,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
     .returning({ id: playlist.id, name: playlist.name, serverUrl: playlist.serverUrl });
 
   invalidateEpgCache(params.id);
-  return json(updated);
+  return json({ ...updated, serverUrl: decrypt(updated.serverUrl) });
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
