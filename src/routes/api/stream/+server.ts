@@ -47,6 +47,22 @@ function saveCookies(userId: string, hostname: string, response: Response): void
   }
 }
 
+const UPSTREAM_TIMEOUT_MS = 20_000;
+
+/** Returns true for hostnames that resolve to private/internal addresses. */
+function isPrivateHost(hostname: string): boolean {
+  return (
+    /^localhost$/i.test(hostname) ||
+    /^127\./.test(hostname) ||
+    /^10\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^169\.254\./.test(hostname) || // link-local / cloud metadata (AWS, GCP, Azure)
+    /^::1$/.test(hostname) ||
+    /^fd[0-9a-f]{2}:/i.test(hostname) // IPv6 ULA
+  );
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -64,29 +80,43 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const creds = await getPlaylistWithCreds(playlistId, userId);
     if (!creds) error(404);
 
+    const allowedHost = new URL(creds.serverUrl).hostname;
     const api = new XtreamApi(creds);
-    return proxyManifest(api.liveStreamUrl(streamId), url.origin, userId);
+    return proxyManifest(api.liveStreamUrl(streamId), url.origin, userId, allowedHost);
   }
 
   // ── Case 2: token-based proxied manifest/segment request ─────────────────
   // The token was produced by rewriteManifest() and contains an AES-GCM-encrypted
-  // payload of { url, userId }. The upstream URL (which contains Xtream credentials)
-  // is never sent to the browser in plaintext.
+  // payload of { url, userId, allowedHost }. The upstream URL (which contains Xtream
+  // credentials) is never sent to the browser in plaintext.
   const token = url.searchParams.get("token");
   if (!token) error(400, "token parameter required");
 
   let targetUrl: string;
+  let allowedHost: string;
   try {
     const payload = decryptProxyToken(token);
     if (payload.userId !== userId) error(403, "Token user mismatch");
     targetUrl = payload.url;
+    allowedHost = payload.allowedHost;
   } catch (e) {
     // Re-throw SvelteKit HTTP errors (e.g. the 403 above); only catch crypto failures.
     if (e != null && typeof e === "object" && "status" in e) throw e;
     error(400, "Invalid or tampered token");
   }
 
-  return proxyUrl(targetUrl, url.origin, userId);
+  // SSRF guard: reject if the target host doesn't match the original server host.
+  let targetHost: string;
+  try {
+    targetHost = new URL(targetUrl).hostname;
+  } catch {
+    error(400, "Invalid target URL in token");
+  }
+  if (targetHost !== allowedHost) {
+    error(403, "Target host not permitted");
+  }
+
+  return proxyUrl(targetUrl, url.origin, userId, allowedHost);
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,7 +147,7 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
   try {
     res = await fetch(targetUrl, {
       headers,
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       redirect: "follow",
     });
   } catch (e) {
@@ -145,41 +175,43 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
   return res;
 }
 
-async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: string) {
+async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: string, allowedHost: string) {
   const res = await fetchUpstream(streamUrl, userId);
   const ct = res.headers.get("content-type") ?? "";
   // Use the final URL after any redirects as the base for resolving relative paths
   const finalUrl = res.url || streamUrl;
+  // If the manifest redirected to a different host (e.g. CDN), use that host as
+  // allowedHost so the segment tokens it generates will pass the SSRF guard.
+  const finalHost = (() => { try { return new URL(finalUrl).hostname; } catch { return allowedHost; } })();
 
   if (isHlsManifest(ct, finalUrl)) {
     const text = await res.text();
-    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId), {
+    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId, finalHost), {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache",
-        "Access-Control-Allow-Origin": "*",
       },
     });
   }
 
   // Raw MPEG-TS — pass through directly
   return new Response(res.body, {
-    headers: { "Content-Type": ct || "video/MP2T", "Access-Control-Allow-Origin": "*" },
+    headers: { "Content-Type": ct || "video/MP2T" },
   });
 }
 
-async function proxyUrl(targetUrl: string, proxyOrigin: string, userId: string) {
+async function proxyUrl(targetUrl: string, proxyOrigin: string, userId: string, allowedHost: string) {
   const res = await fetchUpstream(targetUrl, userId);
   const ct = res.headers.get("content-type") ?? "";
   const finalUrl = res.url || targetUrl;
+  const finalHost = (() => { try { return new URL(finalUrl).hostname; } catch { return allowedHost; } })();
 
   if (isHlsManifest(ct, finalUrl)) {
     const text = await res.text();
-    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId), {
+    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId, finalHost), {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache",
-        "Access-Control-Allow-Origin": "*",
       },
     });
   }
@@ -188,7 +220,6 @@ async function proxyUrl(targetUrl: string, proxyOrigin: string, userId: string) 
     headers: {
       "Content-Type": ct || "video/MP2T",
       "Cache-Control": "no-cache",
-      "Access-Control-Allow-Origin": "*",
     },
   });
 }
@@ -208,6 +239,7 @@ function rewriteManifest(
   manifestUrl: string,
   proxyOrigin: string,
   userId: string,
+  allowedHost: string,
 ): string {
   const base = manifestUrl.substring(0, manifestUrl.lastIndexOf("/") + 1);
 
@@ -231,7 +263,7 @@ function rewriteManifest(
         absolute = base + trimmed;
       }
 
-      const token = encryptProxyToken(absolute, userId);
+      const token = encryptProxyToken(absolute, userId, allowedHost);
       return `${proxyOrigin}/api/stream?token=${encodeURIComponent(token)}`;
     })
     .join("\n");

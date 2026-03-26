@@ -131,14 +131,18 @@
 	});
 
 	$effect(() => {
+		// Read searchListEl explicitly so Svelte 5 tracks it as a dependency.
+		// Reading it only inside the closure () => searchListEl would NOT be
+		// tracked because closures are not executed during the effect body.
+		const el = searchListEl ?? null;
 		get(searchVirtualizer).setOptions({
 			count: searchResults.length,
-			getScrollElement: () => searchListEl ?? null,
+			getScrollElement: () => el,
 		});
 	});
 
 	// ── Virtual scroll ─────────────────────────────────────────────────────────
-	let guideEl: HTMLDivElement;
+	let guideEl: HTMLDivElement = $state()!;
 	let scrollTop = $state(0);
 	let viewH = $state(500);
 
@@ -307,6 +311,7 @@
 					? 'bg-indigo-600 text-white'
 					: 'text-gray-400 hover:text-white hover:bg-gray-800'}"
 				onclick={() => {
+					searchQuery = '';
 					activeCatId = cat.category_id;
 					loadChannels(playlistId, cat.category_id);
 				}}

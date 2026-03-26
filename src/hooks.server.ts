@@ -6,6 +6,27 @@ import { redirect, type Handle } from "@sveltejs/kit";
 
 const PUBLIC_PATHS = ["/login", "/setup", "/api/auth"];
 
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "media-src 'self' blob:", // blob: for hls.js MSE, self for proxied streams
+    "img-src 'self' data: *",
+    "connect-src 'self'",
+  ].join("; "),
+};
+
+function applySecurityHeaders(response: Response): Response {
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    response.headers.set(key, value);
+  }
+  return response;
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
   // Attach session/user to locals
   const session = await auth.api.getSession({ headers: event.request.headers });
@@ -21,7 +42,7 @@ export const handle: Handle = async ({ event, resolve }) => {
       const [{ value: userCount }] = await db.select({ value: count() }).from(user);
       if (userCount === 0) redirect(302, "/setup");
     }
-    return resolve(event);
+    return applySecurityHeaders(await resolve(event));
   }
 
   // Require auth for everything else
@@ -29,5 +50,5 @@ export const handle: Handle = async ({ event, resolve }) => {
     redirect(302, "/login");
   }
 
-  return resolve(event);
+  return applySecurityHeaders(await resolve(event));
 };

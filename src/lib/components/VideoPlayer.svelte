@@ -15,8 +15,8 @@
 	let { streamUrl }: { streamUrl: string | null } = $props();
 
 	// ── Refs ──────────────────────────────────────────────────────────────
-	let videoEl: HTMLVideoElement;
-	let containerEl: HTMLDivElement;
+	let videoEl: HTMLVideoElement = $state()!;
+	let containerEl: HTMLDivElement = $state()!;
 
 	// ── State ─────────────────────────────────────────────────────────────
 	const VOLUME_KEY = 'iptv_volume';
