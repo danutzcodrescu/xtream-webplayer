@@ -28,11 +28,13 @@
 	let {
 		playlistId,
 		selectedChannel = null,
-		onSelect
+		onSelect,
+		searchQuery = $bindable(''),
 	}: {
 		playlistId: string;
 		selectedChannel: Channel | null;
 		onSelect: (ch: Channel) => void;
+		searchQuery?: string;
 	} = $props();
 
 	// ── Layout constants ───────────────────────────────────────────────────────
@@ -66,7 +68,6 @@
 	let channels = $state<Channel[]>([]);
 	let allChannels = $state<Channel[]>([]); // all channels across all categories, for global search
 	let activeCatId = $state('');
-	let searchQuery = $state('');
 	let epg = $state<Record<number, EpgEntry[]>>({});
 	const loadedEpg = new Set<number>();
 	let loadingChannels = $state(false);
@@ -160,6 +161,10 @@
 	}
 
 	let allChannelsLoading = false;
+
+	$effect(() => {
+		if (searchQuery.trim().length > 0) ensureAllChannels();
+	});
 
 	async function ensureAllChannels() {
 		if (allChannels.length > 0 || allChannelsLoading) return;
@@ -256,16 +261,6 @@
 		{/each}
 
 		<span class="flex-1 min-w-4"></span>
-
-		<!-- Search -->
-		<input
-			type="search"
-			placeholder="Search channels…"
-			bind:value={searchQuery}
-			oninput={ensureAllChannels}
-			class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white
-			       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-44"
-		/>
 
 		<!-- Now button -->
 		<button

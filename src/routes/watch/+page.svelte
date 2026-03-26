@@ -10,6 +10,7 @@
 	// ── State ──────────────────────────────────────────────────────────────────
 	// null means "user hasn't picked one yet — use the first available"
 	let userPlaylistId = $state<string | null>(null);
+	let searchQuery = $state('');
 
 	let selectedChannel = $state<{
 		stream_id: number;
@@ -104,6 +105,17 @@
 
 		<span class="flex-1"></span>
 
+		<!-- Search -->
+		{#if selectedPlaylist}
+			<input
+				type="search"
+				placeholder="Search channels…"
+				bind:value={searchQuery}
+				class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white
+				       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-48"
+			/>
+		{/if}
+
 		<!-- Close player button (shown when playing) -->
 		{#if streamUrl}
 			<button
@@ -150,6 +162,7 @@
 					playlistId={selectedPlaylist.id}
 					{selectedChannel}
 					onSelect={handleChannelSelect}
+					bind:searchQuery
 				/>
 			{:else}
 				<div class="flex flex-col items-center justify-center h-full text-gray-500 gap-3">
