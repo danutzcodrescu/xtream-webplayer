@@ -76,13 +76,46 @@
 
 	const catMap = $derived(new Map(categories.map((c) => [c.category_id, c.category_name])));
 
-	const searchResults = $derived(
-		searchQuery.trim().length > 0
-			? allChannels
-					.filter((c) => c.name.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-					.slice(0, 100)
-			: []
-	);
+	/** Returns true if every word in the query appears somewhere in text. */
+	function matchesWords(text: string, words: string[]): boolean {
+		const lower = text.toLowerCase();
+		return words.every((w) => lower.includes(w));
+	}
+
+	const searchResults = $derived.by(() => {
+		const q = searchQuery.trim().toLowerCase();
+		if (!q) return [];
+		const words = q.split(/\s+/);
+
+		const results: { channel: Channel; matchedProgramme: string | null }[] = [];
+		const seen = new Set<number>();
+
+		// First pass: channel name matches
+		for (const ch of allChannels) {
+			if (matchesWords(ch.name, words)) {
+				results.push({ channel: ch, matchedProgramme: null });
+				seen.add(ch.stream_id);
+			}
+		}
+
+		// Second pass: EPG programme title matches (already loaded in memory)
+		for (const [streamIdStr, programmes] of Object.entries(epg)) {
+			const streamId = Number(streamIdStr);
+			if (seen.has(streamId)) continue;
+			for (const prog of programmes) {
+				if (matchesWords(prog.title, words)) {
+					const ch = allChannels.find((c) => c.stream_id === streamId);
+					if (ch) {
+						results.push({ channel: ch, matchedProgramme: prog.title });
+						seen.add(streamId);
+					}
+					break;
+				}
+			}
+		}
+
+		return results.slice(0, 100);
+	});
 
 	// ── Virtual scroll ─────────────────────────────────────────────────────────
 	let guideEl: HTMLDivElement;
@@ -282,7 +315,7 @@
 				</div>
 			{:else}
 				<div class="p-2 space-y-0.5">
-					{#each searchResults as ch (ch.stream_id)}
+					{#each searchResults as { channel: ch, matchedProgramme } (ch.stream_id)}
 						<button
 							class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left
 							       transition-colors
@@ -309,7 +342,9 @@
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="text-sm font-medium text-gray-200 truncate">{ch.name}</div>
-								{#if catMap.get(ch.category_id)}
+								{#if matchedProgramme}
+									<div class="text-xs text-yellow-400/80 truncate mt-0.5">{matchedProgramme}</div>
+								{:else if catMap.get(ch.category_id)}
 									<div class="text-xs text-indigo-400 truncate mt-0.5">
 										{catMap.get(ch.category_id)}
 									</div>
