@@ -159,9 +159,14 @@
 		loadingChannels = false;
 	}
 
-	async function loadAllForSearch(pid: string) {
-		const r = await fetch(`/api/channels?playlistId=${pid}`);
+	let allChannelsLoading = false;
+
+	async function ensureAllChannels() {
+		if (allChannels.length > 0 || allChannelsLoading) return;
+		allChannelsLoading = true;
+		const r = await fetch(`/api/channels?playlistId=${playlistId}`);
 		if (r.ok) allChannels = await r.json();
+		allChannelsLoading = false;
 	}
 
 	async function selectFromSearch(ch: Channel) {
@@ -214,11 +219,11 @@
 		searchQuery = '';
 		channels = [];
 		allChannels = [];
+		allChannelsLoading = false;
 		categories = [];
 		epg = {};
 		loadedEpg.clear();
 		loadCategories(pid);
-		loadAllForSearch(pid);
 	});
 
 	onMount(() => {
@@ -257,6 +262,7 @@
 			type="search"
 			placeholder="Search channels…"
 			bind:value={searchQuery}
+			oninput={ensureAllChannels}
 			class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white
 			       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-44"
 		/>
