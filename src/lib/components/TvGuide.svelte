@@ -138,7 +138,13 @@
 	// ── Data loading ───────────────────────────────────────────────────────────
 	async function loadCategories(pid: string) {
 		const r = await fetch(`/api/categories?playlistId=${pid}`);
-		if (r.ok) categories = (await r.json()).filter((c: Category) => !c.hidden);
+		if (r.ok) {
+			categories = (await r.json()).filter((c: Category) => !c.hidden);
+			if (categories.length > 0 && activeCatId === '') {
+				activeCatId = categories[0].category_id;
+				loadChannels(pid, categories[0].category_id);
+			}
+		}
 	}
 
 	async function loadChannels(pid: string, catId: string) {
@@ -148,13 +154,14 @@
 		const p = new URLSearchParams({ playlistId: pid });
 		if (catId) p.set('categoryId', catId);
 		const r = await fetch(`/api/channels?${p}`);
-		if (r.ok) {
-			channels = await r.json();
-			if (!catId) allChannels = channels;
-		} else {
-			channels = [];
-		}
+		if (r.ok) channels = await r.json();
+		else channels = [];
 		loadingChannels = false;
+	}
+
+	async function loadAllForSearch(pid: string) {
+		const r = await fetch(`/api/channels?playlistId=${pid}`);
+		if (r.ok) allChannels = await r.json();
 	}
 
 	async function selectFromSearch(ch: Channel) {
@@ -211,7 +218,7 @@
 		epg = {};
 		loadedEpg.clear();
 		loadCategories(pid);
-		loadChannels(pid, '');
+		loadAllForSearch(pid);
 	});
 
 	onMount(() => {
@@ -230,17 +237,6 @@
 		class="flex items-center gap-2 px-3 py-2 bg-gray-900 border-b border-gray-800 shrink-0 overflow-x-auto"
 	>
 		<!-- Category tabs -->
-		<button
-			class="px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition
-			       {activeCatId === ''
-				? 'bg-indigo-600 text-white'
-				: 'text-gray-400 hover:text-white hover:bg-gray-800'}"
-			onclick={() => {
-				activeCatId = '';
-				loadChannels(playlistId, '');
-			}}
-		>All</button>
-
 		{#each categories as cat}
 			<button
 				class="px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition
