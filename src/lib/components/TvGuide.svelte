@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 
 	// ── Types ──────────────────────────────────────────────────────────────────
 	interface Category {
@@ -64,16 +64,23 @@
 	// ── Data ───────────────────────────────────────────────────────────────────
 	let categories = $state<Category[]>([]);
 	let channels = $state<Channel[]>([]);
+	let allChannels = $state<Channel[]>([]); // all channels across all categories, for global search
 	let activeCatId = $state('');
 	let searchQuery = $state('');
 	let epg = $state<Record<number, EpgEntry[]>>({});
 	const loadedEpg = new Set<number>();
 	let loadingChannels = $state(false);
 
-	const filteredChannels = $derived(
-		searchQuery
-			? channels.filter((c) => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
-			: channels
+	const filteredChannels = $derived(channels);
+
+	const catMap = $derived(new Map(categories.map((c) => [c.category_id, c.category_name])));
+
+	const searchResults = $derived(
+		searchQuery.trim().length > 0
+			? allChannels
+					.filter((c) => c.name.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+					.slice(0, 100)
+			: []
 	);
 
 	// ── Virtual scroll ─────────────────────────────────────────────────────────
@@ -141,9 +148,27 @@
 		const p = new URLSearchParams({ playlistId: pid });
 		if (catId) p.set('categoryId', catId);
 		const r = await fetch(`/api/channels?${p}`);
-		if (r.ok) channels = await r.json();
-		else channels = [];
+		if (r.ok) {
+			channels = await r.json();
+			if (!catId) allChannels = channels;
+		} else {
+			channels = [];
+		}
 		loadingChannels = false;
+	}
+
+	async function selectFromSearch(ch: Channel) {
+		searchQuery = '';
+		activeCatId = ch.category_id;
+		onSelect(ch);
+		await loadChannels(playlistId, ch.category_id);
+		await tick(); // wait for guide to re-render before scrolling
+		const idx = channels.findIndex((c) => c.stream_id === ch.stream_id);
+		if (idx >= 0 && guideEl) {
+			const target = Math.max(0, idx * ROW_H - viewH / 2 + ROW_H / 2);
+			guideEl.scrollTop = target;
+			scrollTop = target;
+		}
 	}
 
 	function maybeLoadEpg(streamId: number) {
@@ -181,6 +206,7 @@
 		activeCatId = '';
 		searchQuery = '';
 		channels = [];
+		allChannels = [];
 		categories = [];
 		epg = {};
 		loadedEpg.clear();
@@ -249,6 +275,55 @@
 			Now
 		</button>
 	</div>
+
+	<!-- ── Search results ──────────────────────────────────────────────────── -->
+	{#if searchQuery.trim()}
+		<div class="flex-1 overflow-y-auto min-h-0">
+			{#if searchResults.length === 0}
+				<div class="flex items-center justify-center h-32 text-gray-500 text-sm">
+					No channels found
+				</div>
+			{:else}
+				<div class="p-2 space-y-0.5">
+					{#each searchResults as ch (ch.stream_id)}
+						<button
+							class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left
+							       transition-colors
+							       {selectedChannel?.stream_id === ch.stream_id
+								? 'bg-indigo-900/50'
+								: 'hover:bg-gray-800/80'}"
+							onclick={() => selectFromSearch(ch)}
+						>
+							<div class="shrink-0">
+								{#if ch.stream_icon}
+									<img
+										src={ch.stream_icon}
+										alt=""
+										class="w-9 h-9 object-contain rounded"
+										onerror={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+									/>
+								{:else}
+									<div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
+										<span class="text-xs text-gray-600 font-bold">
+											{ch.name.slice(0, 2).toUpperCase()}
+										</span>
+									</div>
+								{/if}
+							</div>
+							<div class="flex-1 min-w-0">
+								<div class="text-sm font-medium text-gray-200 truncate">{ch.name}</div>
+								{#if catMap.get(ch.category_id)}
+									<div class="text-xs text-indigo-400 truncate mt-0.5">
+										{catMap.get(ch.category_id)}
+									</div>
+								{/if}
+							</div>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{:else}
 
 	<!-- ── Guide grid ──────────────────────────────────────────────────────── -->
 	<div
@@ -405,4 +480,5 @@
 			<div style="height:{padBot}px" aria-hidden="true"></div>
 		</div>
 	</div>
+	{/if}
 </div>
