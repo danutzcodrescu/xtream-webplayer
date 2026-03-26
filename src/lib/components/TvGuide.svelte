@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { get } from 'svelte/store';
+	import { createVirtualizer } from '@tanstack/svelte-virtual';
 
 	// ── Types ──────────────────────────────────────────────────────────────────
 	interface Category {
@@ -114,7 +116,25 @@
 			}
 		}
 
-		return results.slice(0, 100);
+		return results;
+	});
+
+	// ── Search results virtual list ─────────────────────────────────────────────
+	const ITEM_H = 60; // px — fixed row height for the search list
+	let searchListEl: HTMLDivElement | undefined = $state(undefined);
+
+	const searchVirtualizer = createVirtualizer({
+		count: 0,
+		getScrollElement: () => searchListEl ?? null,
+		estimateSize: () => ITEM_H,
+		overscan: 5,
+	});
+
+	$effect(() => {
+		get(searchVirtualizer).setOptions({
+			count: searchResults.length,
+			getScrollElement: () => searchListEl ?? null,
+		});
 	});
 
 	// ── Virtual scroll ─────────────────────────────────────────────────────────
@@ -306,51 +326,56 @@
 		</button>
 	</div>
 
-	<!-- ── Search results ──────────────────────────────────────────────────── -->
+	<!-- ── Search results (virtualized) ────────────────────────────────────── -->
 	{#if searchQuery.trim()}
-		<div class="flex-1 overflow-y-auto min-h-0">
+		<div bind:this={searchListEl} class="flex-1 overflow-y-auto min-h-0">
 			{#if searchResults.length === 0}
 				<div class="flex items-center justify-center h-32 text-gray-500 text-sm">
 					No channels found
 				</div>
 			{:else}
-				<div class="p-2 space-y-0.5">
-					{#each searchResults as { channel: ch, matchedProgramme } (ch.stream_id)}
-						<button
-							class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left
-							       transition-colors
-							       {selectedChannel?.stream_id === ch.stream_id
-								? 'bg-indigo-900/50'
-								: 'hover:bg-gray-800/80'}"
-							onclick={() => selectFromSearch(ch)}
+				<div style="height:{$searchVirtualizer.getTotalSize()}px;position:relative">
+					{#each $searchVirtualizer.getVirtualItems() as item (item.key)}
+						{@const { channel: ch, matchedProgramme } = searchResults[item.index]}
+						<div
+							style="position:absolute;top:0;left:0;width:100%;height:{item.size}px;transform:translateY({item.start}px)"
 						>
-							<div class="shrink-0">
-								{#if ch.stream_icon}
-									<img
-										src={ch.stream_icon}
-										alt=""
-										class="w-9 h-9 object-contain rounded"
-										onerror={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-									/>
-								{:else}
-									<div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
-										<span class="text-xs text-gray-600 font-bold">
-											{ch.name.slice(0, 2).toUpperCase()}
-										</span>
-									</div>
-								{/if}
-							</div>
-							<div class="flex-1 min-w-0">
-								<div class="text-sm font-medium text-gray-200 truncate">{ch.name}</div>
-								{#if matchedProgramme}
-									<div class="text-xs text-yellow-400/80 truncate mt-0.5">{matchedProgramme}</div>
-								{:else if catMap.get(ch.category_id)}
-									<div class="text-xs text-indigo-400 truncate mt-0.5">
-										{catMap.get(ch.category_id)}
-									</div>
-								{/if}
-							</div>
-						</button>
+							<button
+								class="w-full h-full flex items-center gap-3 px-3 rounded-lg text-left
+								       transition-colors
+								       {selectedChannel?.stream_id === ch.stream_id
+									? 'bg-indigo-900/50'
+									: 'hover:bg-gray-800/80'}"
+								onclick={() => selectFromSearch(ch)}
+							>
+								<div class="shrink-0">
+									{#if ch.stream_icon}
+										<img
+											src={ch.stream_icon}
+											alt=""
+											class="w-9 h-9 object-contain rounded"
+											onerror={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
+										/>
+									{:else}
+										<div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
+											<span class="text-xs text-gray-600 font-bold">
+												{ch.name.slice(0, 2).toUpperCase()}
+											</span>
+										</div>
+									{/if}
+								</div>
+								<div class="flex-1 min-w-0">
+									<div class="text-sm font-medium text-gray-200 truncate">{ch.name}</div>
+									{#if matchedProgramme}
+										<div class="text-xs text-yellow-400/80 truncate mt-0.5">{matchedProgramme}</div>
+									{:else if catMap.get(ch.category_id)}
+										<div class="text-xs text-indigo-400 truncate mt-0.5">
+											{catMap.get(ch.category_id)}
+										</div>
+									{/if}
+								</div>
+							</button>
+						</div>
 					{/each}
 				</div>
 			{/if}

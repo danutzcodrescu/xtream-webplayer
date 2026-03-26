@@ -16,6 +16,7 @@
     "fmt:check": "oxfmt --check ."
   },
   "dependencies": {
+    "@tanstack/svelte-virtual": "^3.13.23",
     "better-auth": "^1.2.7",
     "drizzle-orm": "^0.45.1",
     "fast-xml-parser": "^4.5.3",
