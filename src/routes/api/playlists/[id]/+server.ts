@@ -3,7 +3,7 @@ import { db } from "$lib/server/db";
 import { playlist } from "$lib/server/db/schema";
 import { and, eq } from "drizzle-orm";
 import { encrypt, decrypt } from "$lib/server/crypto";
-import { invalidateEpgCache } from "$lib/server/epg";
+import { invalidatePlaylistCache } from "$lib/server/cache";
 import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
 
@@ -44,7 +44,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
     .where(and(eq(playlist.id, params.id), eq(playlist.userId, locals.user.id)))
     .returning({ id: playlist.id, name: playlist.name, serverUrl: playlist.serverUrl });
 
-  invalidateEpgCache(params.id);
+  invalidatePlaylistCache(params.id);
   log.info({ userId: locals.user.id, playlistId: params.id }, "playlist updated");
   return json({ ...updated, serverUrl: decrypt(updated.serverUrl) });
 };
@@ -58,7 +58,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
     .delete(playlist)
     .where(and(eq(playlist.id, params.id), eq(playlist.userId, locals.user.id)));
 
-  invalidateEpgCache(params.id);
+  invalidatePlaylistCache(params.id);
   log.info({ userId: locals.user.id, playlistId: params.id }, "playlist deleted");
   return new Response(null, { status: 204 });
 };

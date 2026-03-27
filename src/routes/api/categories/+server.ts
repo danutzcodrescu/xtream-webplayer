@@ -4,6 +4,7 @@ import { playlist, categoryOrder } from "$lib/server/db/schema";
 import { and, eq, asc } from "drizzle-orm";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
+import { categoryCache } from "$lib/server/cache";
 import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
 
@@ -15,24 +16,30 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   const playlistId = url.searchParams.get("playlistId");
   if (!playlistId) error(400, "playlistId required");
 
-  const creds = await getPlaylistWithCreds(playlistId, locals.user.id);
-  if (!creds) error(404);
+  // Raw Xtream categories are cached; DB ordering is always fresh (fast local query)
+  let rawCategories = categoryCache.get(playlistId);
+  if (rawCategories) {
+    log.debug({ playlistId, count: rawCategories.length }, "categories cache hit");
+  } else {
+    const creds = await getPlaylistWithCreds(playlistId, locals.user.id);
+    if (!creds) error(404);
 
-  log.debug({ playlistId }, "fetching categories");
-  const api = new XtreamApi(creds);
+    log.debug({ playlistId }, "fetching categories from xtream");
+    const api = new XtreamApi(creds);
+    rawCategories = await api.getLiveCategories();
+    categoryCache.set(playlistId, rawCategories);
+    log.debug({ playlistId, count: rawCategories.length }, "categories fetched and cached");
+  }
 
-  const [categories, orders] = await Promise.all([
-    api.getLiveCategories(),
-    db
-      .select()
-      .from(categoryOrder)
-      .where(eq(categoryOrder.playlistId, playlistId))
-      .orderBy(asc(categoryOrder.position)),
-  ]);
+  const orders = await db
+    .select()
+    .from(categoryOrder)
+    .where(eq(categoryOrder.playlistId, playlistId))
+    .orderBy(asc(categoryOrder.position));
 
   const orderMap = new Map(orders.map((o) => [o.categoryId, o]));
 
-  const merged = categories.map((cat) => {
+  const merged = rawCategories.map((cat) => {
     const ord = orderMap.get(cat.category_id);
     return {
       ...cat,
@@ -42,7 +49,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   });
 
   merged.sort((a, b) => a.position - b.position);
-  log.debug({ playlistId, count: merged.length }, "categories fetched");
   return json(merged);
 };
 

@@ -1,6 +1,7 @@
 import { json, error } from "@sveltejs/kit";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
+import { epgCache } from "$lib/server/cache";
 import { logger } from "$lib/server/logger";
 import type { XtreamEpgEntry } from "$lib/server/xtream";
 import type { RequestHandler } from "./$types";
@@ -39,16 +40,25 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   const creds = await getPlaylistWithCreds(playlistId, locals.user.id);
   if (!creds) error(404);
 
-  const api = new XtreamApi(creds);
   const limitStr = url.searchParams.get("limit");
   let limit = 5;
   if (limitStr !== null) {
     if (!/^\d+$/.test(limitStr)) error(400, "limit must be a positive integer");
     limit = Math.min(50, Math.max(1, parseInt(limitStr, 10)));
   }
+
+  const cacheKey = `${playlistId}:${streamId}`;
+  const cached = epgCache.get(cacheKey);
+  if (cached) {
+    log.debug({ playlistId, streamId, count: cached.length }, "epg cache hit");
+    return json(cached);
+  }
+
+  const api = new XtreamApi(creds);
   log.debug({ playlistId, streamId, limit }, "fetching epg");
   const data = await api.getShortEpg(streamId, limit);
   const listings = decodeListings(data.epg_listings ?? []);
-  log.debug({ playlistId, streamId, count: listings.length }, "epg fetched");
+  epgCache.set(cacheKey, listings);
+  log.debug({ playlistId, streamId, count: listings.length }, "epg fetched and cached");
   return json(listings);
 };
