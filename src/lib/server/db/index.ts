@@ -8,7 +8,7 @@ import { logger } from "../logger.js";
 
 const log = logger.child({ module: "db" });
 
-const dbUrl = process.env.DATABASE_URL ?? "./data/iptv.db";
+const dbUrl = process.env.DATABASE_URL ?? "./data/xtream.db";
 
 mkdirSync(dirname(dbUrl), { recursive: true });
 log.info({ path: dbUrl }, "opening database");
