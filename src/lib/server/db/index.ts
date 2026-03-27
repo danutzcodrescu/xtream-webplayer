@@ -4,10 +4,14 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import * as schema from "./schema.js";
 import { encrypt } from "../crypto.js";
+import { logger } from "../logger.js";
+
+const log = logger.child({ module: "db" });
 
 const dbUrl = process.env.DATABASE_URL ?? "./data/iptv.db";
 
 mkdirSync(dirname(dbUrl), { recursive: true });
+log.info({ path: dbUrl }, "opening database");
 
 const sqlite = new DatabaseSync(dbUrl);
 sqlite.exec("PRAGMA journal_mode = WAL");
@@ -87,19 +91,24 @@ sqlite.exec(`
   );
 `);
 
+log.info("applying schema");
+
 // Migrate existing databases — safe to run repeatedly
 try {
   sqlite.exec('ALTER TABLE "user" ADD COLUMN "username" TEXT');
+  log.debug("migration: added user.username column");
 } catch {
   /* already exists */
 }
 try {
   sqlite.exec('ALTER TABLE "user" ADD COLUMN "displayUsername" TEXT');
+  log.debug("migration: added user.displayUsername column");
 } catch {
   /* already exists */
 }
 try {
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS "user_username_unique" ON "user"("username")');
+  log.debug("migration: created user_username_unique index");
 } catch {
   /* already exists */
 }
@@ -111,6 +120,7 @@ try {
     id: string;
     serverUrl: string;
   }[];
+  let migrated = 0;
   for (const row of rows) {
     const parts = row.serverUrl.split(":");
     const isEncrypted =
@@ -119,11 +129,15 @@ try {
       sqlite
         .prepare('UPDATE "playlist" SET serverUrl = ? WHERE id = ?')
         .run(encrypt(row.serverUrl), row.id);
+      migrated++;
     }
   }
+  if (migrated > 0) log.info({ migrated }, "migration: encrypted plaintext serverUrls");
 } catch {
   /* table doesn't exist yet on a brand-new install — nothing to migrate */
 }
+
+log.info({ path: dbUrl }, "database ready");
 
 export const db = drizzle(
 	(sql, params, method) => {

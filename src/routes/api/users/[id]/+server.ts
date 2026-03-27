@@ -2,11 +2,14 @@ import { json, error } from "@sveltejs/kit";
 import { db } from "$lib/server/db";
 import { user } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
+import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child({ module: "users" });
 
 function requireAdmin(locals: App.Locals) {
   if (!locals.user) error(401);
-  if ((locals.user as { role?: string }).role !== "admin") error(403, "Admin only");
+  if (locals.user.role !== "admin") error(403, "Admin only");
 }
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
@@ -30,6 +33,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
     });
 
   if (!updated) error(404);
+  log.info({ targetUserId: params.id, changes: body, by: locals.user?.id }, "user updated");
   return json(updated);
 };
 
@@ -40,5 +44,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
   if (params.id === locals.user?.id) error(400, "Cannot delete your own account");
 
   await db.delete(user).where(eq(user.id, params.id));
+  log.info({ targetUserId: params.id, by: locals.user?.id }, "user deleted");
   return new Response(null, { status: 204 });
 };

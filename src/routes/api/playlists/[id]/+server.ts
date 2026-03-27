@@ -4,7 +4,10 @@ import { playlist } from "$lib/server/db/schema";
 import { and, eq } from "drizzle-orm";
 import { encrypt, decrypt } from "$lib/server/crypto";
 import { invalidateEpgCache } from "$lib/server/epg";
+import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child({ module: "playlists" });
 
 async function getOwned(id: string, userId: string) {
   const [row] = await db
@@ -42,6 +45,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
     .returning({ id: playlist.id, name: playlist.name, serverUrl: playlist.serverUrl });
 
   invalidateEpgCache(params.id);
+  log.info({ userId: locals.user.id, playlistId: params.id }, "playlist updated");
   return json({ ...updated, serverUrl: decrypt(updated.serverUrl) });
 };
 
@@ -55,5 +59,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
     .where(and(eq(playlist.id, params.id), eq(playlist.userId, locals.user.id)));
 
   invalidateEpgCache(params.id);
+  log.info({ userId: locals.user.id, playlistId: params.id }, "playlist deleted");
   return new Response(null, { status: 204 });
 };

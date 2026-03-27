@@ -2,7 +2,10 @@ import { error } from "@sveltejs/kit";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
 import { encryptProxyToken, decryptProxyToken } from "$lib/server/crypto";
+import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child({ module: "stream" });
 
 // ── Per-user session cookie jar ───────────────────────────────────────────────
 // Key: `${userId}:${hostname}`  Value: Cookie header string
@@ -80,6 +83,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const creds = await getPlaylistWithCreds(playlistId, userId);
     if (!creds) error(404);
 
+    log.info({ userId, playlistId, streamId }, "stream session started");
+
     const allowedHost = new URL(creds.serverUrl).hostname;
     const api = new XtreamApi(creds);
     return proxyManifest(api.liveStreamUrl(streamId), url.origin, userId, allowedHost);
@@ -96,12 +101,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   let allowedHost: string;
   try {
     const payload = decryptProxyToken(token);
-    if (payload.userId !== userId) error(403, "Token user mismatch");
+    if (payload.userId !== userId) {
+      log.warn({ userId, tokenUserId: payload.userId }, "token user mismatch");
+      error(403, "Token user mismatch");
+    }
     targetUrl = payload.url;
     allowedHost = payload.allowedHost;
   } catch (e) {
     // Re-throw SvelteKit HTTP errors (e.g. the 403 above); only catch crypto failures.
     if (e != null && typeof e === "object" && "status" in e) throw e;
+    log.warn({ userId }, "invalid or tampered proxy token");
     error(400, "Invalid or tampered token");
   }
 
@@ -110,12 +119,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   try {
     targetHost = new URL(targetUrl).hostname;
   } catch {
+    log.warn({ userId, targetUrl }, "invalid target URL in token");
     error(400, "Invalid target URL in token");
   }
   if (targetHost !== allowedHost) {
+    log.warn({ userId, targetHost, allowedHost }, "ssrf guard: target host not permitted");
     error(403, "Target host not permitted");
   }
 
+  log.debug({ userId, host: targetHost }, "proxying segment");
   return proxyUrl(targetUrl, url.origin, userId, allowedHost);
 };
 
@@ -152,7 +164,7 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[stream] network error for", targetUrl, "-", msg);
+    log.error({ url: targetUrl, err: msg }, "upstream network error");
     error(502, `Network error: ${msg}`);
   }
 
@@ -161,14 +173,7 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
 
   if (!res.ok) {
     const preview = await res.text().catch(() => "");
-    console.error(
-      "[stream] upstream returned",
-      res.status,
-      "for",
-      targetUrl,
-      "-",
-      preview.slice(0, 120),
-    );
+    log.warn({ url: targetUrl, status: res.status, preview: preview.slice(0, 120) }, "upstream non-2xx response");
     error(502, `Stream server returned ${res.status}`);
   }
 
@@ -176,6 +181,7 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
 }
 
 async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: string, allowedHost: string) {
+  log.debug({ host: allowedHost }, "fetching manifest");
   const res = await fetchUpstream(streamUrl, userId);
   const ct = res.headers.get("content-type") ?? "";
   // Use the final URL after any redirects as the base for resolving relative paths
@@ -186,6 +192,8 @@ async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: str
 
   if (isHlsManifest(ct, finalUrl)) {
     const text = await res.text();
+    const lineCount = text.split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
+    log.debug({ host: finalHost, contentType: ct, segments: lineCount }, "manifest rewritten");
     return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId, finalHost), {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",

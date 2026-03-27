@@ -62,6 +62,10 @@ export interface XtreamAuthResponse {
   server_info: XtreamServerInfo;
 }
 
+import { logger } from "./logger.js";
+
+const log = logger.child({ module: "xtream" });
+
 const TIMEOUT_MS = 30_000;
 
 export class XtreamApi {
@@ -78,11 +82,17 @@ export class XtreamApi {
       action,
       ...params,
     });
+    const t0 = Date.now();
+    log.debug({ action, server: this.base }, "xtream api call");
     const res = await fetch(`${this.base}/player_api.php?${qs}`, {
       headers: { "User-Agent": "IPTV-WebPlayer/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Xtream API ${action} failed: ${res.status}`);
+    if (!res.ok) {
+      log.warn({ action, server: this.base, status: res.status, ms: Date.now() - t0 }, "xtream api call failed");
+      throw new Error(`Xtream API ${action} failed: ${res.status}`);
+    }
+    log.debug({ action, ms: Date.now() - t0 }, "xtream api call ok");
     return res.json() as Promise<T>;
   }
 
@@ -91,11 +101,17 @@ export class XtreamApi {
       username: this.creds.username,
       password: this.creds.password,
     });
+    const t0 = Date.now();
+    log.debug({ server: this.base }, "xtream authenticate");
     const res = await fetch(`${this.base}/player_api.php?${qs}`, {
       headers: { "User-Agent": "IPTV-WebPlayer/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Xtream auth failed: ${res.status}`);
+    if (!res.ok) {
+      log.warn({ server: this.base, status: res.status, ms: Date.now() - t0 }, "xtream auth failed");
+      throw new Error(`Xtream auth failed: ${res.status}`);
+    }
+    log.debug({ server: this.base, ms: Date.now() - t0 }, "xtream auth ok");
     return res.json() as Promise<XtreamAuthResponse>;
   }
 

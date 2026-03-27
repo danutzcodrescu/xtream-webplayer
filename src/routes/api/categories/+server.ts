@@ -4,7 +4,10 @@ import { playlist, categoryOrder } from "$lib/server/db/schema";
 import { and, eq, asc } from "drizzle-orm";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
+import { logger } from "$lib/server/logger";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child({ module: "categories" });
 
 export const GET: RequestHandler = async ({ url, locals }) => {
   if (!locals.user) error(401);
@@ -15,6 +18,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   const creds = await getPlaylistWithCreds(playlistId, locals.user.id);
   if (!creds) error(404);
 
+  log.debug({ playlistId }, "fetching categories");
   const api = new XtreamApi(creds);
 
   const [categories, orders] = await Promise.all([
@@ -38,6 +42,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   });
 
   merged.sort((a, b) => a.position - b.position);
+  log.debug({ playlistId, count: merged.length }, "categories fetched");
   return json(merged);
 };
 
@@ -74,5 +79,6 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
       });
   }
 
+  log.info({ playlistId, count: categories.length }, "category order saved");
   return json({ ok: true });
 };

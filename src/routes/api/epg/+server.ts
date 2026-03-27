@@ -1,8 +1,11 @@
 import { json, error } from "@sveltejs/kit";
 import { XtreamApi } from "$lib/server/xtream";
 import { getPlaylistWithCreds } from "$lib/server/playlist";
+import { logger } from "$lib/server/logger";
 import type { XtreamEpgEntry } from "$lib/server/xtream";
 import type { RequestHandler } from "./$types";
+
+const log = logger.child({ module: "epg" });
 
 /** Xtream encodes title and description as Base64. Decode them. */
 function decodeListings(listings: XtreamEpgEntry[]): XtreamEpgEntry[] {
@@ -14,15 +17,13 @@ function decodeListings(listings: XtreamEpgEntry[]): XtreamEpgEntry[] {
 }
 
 function tryBase64Decode(value: string): string {
-  if (!value) return value;
-  try {
-    const decoded = Buffer.from(value, "base64").toString("utf8");
-    // Only use the decoded value if it looks like human-readable text
-    // (base64 strings are typically alphanumeric+/+= with no spaces)
-    return /^[A-Za-z0-9+/]+=*$/.test(value) ? decoded : value;
-  } catch {
-    return value;
-  }
+  if (!value || value.length < 4) return value;
+  // Real text has spaces; valid base64 does not. Bail early on obvious non-base64.
+  if (/\s/.test(value) || !/^[A-Za-z0-9+/]+=*$/.test(value)) return value;
+  const decoded = Buffer.from(value, "base64").toString("utf8");
+  // Reject if the decoded bytes contain non-printable control characters
+  if (/[\x00-\x08\x0E-\x1F\x7F]/.test(decoded)) return value;
+  return decoded;
 }
 
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -40,7 +41,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
   const api = new XtreamApi(creds);
   const limitStr = url.searchParams.get("limit");
-  const limit = limitStr ? Math.min(50, Math.max(1, parseInt(limitStr, 10) || 5)) : 5;
+  let limit = 5;
+  if (limitStr !== null) {
+    if (!/^\d+$/.test(limitStr)) error(400, "limit must be a positive integer");
+    limit = Math.min(50, Math.max(1, parseInt(limitStr, 10)));
+  }
+  log.debug({ playlistId, streamId, limit }, "fetching epg");
   const data = await api.getShortEpg(streamId, limit);
-  return json(decodeListings(data.epg_listings ?? []));
+  const listings = decodeListings(data.epg_listings ?? []);
+  log.debug({ playlistId, streamId, count: listings.length }, "epg fetched");
+  return json(listings);
 };
