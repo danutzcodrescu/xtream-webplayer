@@ -1,11 +1,8 @@
-> [!WARNING]
-> This README was generated using AI (Claude). While the content accurately reflects the codebase, review it before relying on it for production use.
-
 # Web Player
 
 A self-hosted web player pet project. Streams live TV through a built-in HLS proxy, shows an interactive EPG (TV guide), and supports multiple users with role-based access.
 
-This is a personal project built for fun and learning — not intended for production use.
+This project was built with AI assistance (Claude) and serves as a learning opportunity and test ground — not intended for production use.
 
 ## Features
 
