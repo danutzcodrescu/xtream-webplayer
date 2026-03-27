@@ -1,8 +1,11 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, username } from "better-auth/plugins";
+import { env } from "$env/dynamic/private";
 import { db } from "./db/index.js";
 import * as schema from "./db/schema.js";
+
+if (!env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET environment variable is required");
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -24,7 +27,7 @@ export const auth = betterAuth({
       adminRole: "admin",
     }),
   ],
-  secret: process.env.BETTER_AUTH_SECRET ?? "fallback-dev-secret-change-in-production",
-  baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:5173",
-  trustedOrigins: [process.env.BETTER_AUTH_URL ?? "http://localhost:5173"],
+  secret: env.BETTER_AUTH_SECRET,
+  baseURL: env.BETTER_AUTH_URL ?? "http://localhost:5173",
+  trustedOrigins: [env.BETTER_AUTH_URL ?? "http://localhost:5173"],
 });

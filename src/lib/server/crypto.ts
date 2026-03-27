@@ -1,9 +1,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
+import { env } from "$env/dynamic/private";
 
 /** Derives a 32-byte AES key from BETTER_AUTH_SECRET via SHA-256 */
 function getKey(): Buffer {
-  const secret = process.env.BETTER_AUTH_SECRET ?? "fallback-dev-secret-change-in-production";
-  return createHash("sha256").update(secret).digest();
+  if (!env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET environment variable is required");
+  return createHash("sha256").update(env.BETTER_AUTH_SECRET).digest();
 }
 
 /**
@@ -22,22 +23,22 @@ export function encrypt(plaintext: string): string {
 }
 
 /**
- * Encrypts a proxy token containing a target URL and the requesting userId.
- * Used in HLS manifest rewriting so upstream URLs (which contain Xtream credentials)
- * are never exposed to the browser.
+ * Encrypts a proxy token containing a target URL, the requesting userId,
+ * and the allowedHost to prevent SSRF by ensuring all proxied requests
+ * stay on the same upstream server.
  */
-export function encryptProxyToken(targetUrl: string, userId: string): string {
-  return encrypt(JSON.stringify({ url: targetUrl, userId }));
+export function encryptProxyToken(targetUrl: string, userId: string, allowedHost: string): string {
+  return encrypt(JSON.stringify({ url: targetUrl, userId, allowedHost }));
 }
 
 /**
  * Decrypts a token produced by `encryptProxyToken()`.
  * Throws if tampered or malformed.
  */
-export function decryptProxyToken(token: string): { url: string; userId: string } {
-  const payload = JSON.parse(decrypt(token)) as { url: string; userId: string };
-  if (!payload.url || !payload.userId) throw new Error("Invalid token payload");
-  return payload;
+export function decryptProxyToken(token: string): { url: string; userId: string; allowedHost: string } {
+  const payload = JSON.parse(decrypt(token)) as { url?: string; userId?: string; allowedHost?: string };
+  if (!payload.url || !payload.userId || !payload.allowedHost) throw new Error("Invalid token payload");
+  return payload as { url: string; userId: string; allowedHost: string };
 }
 
 /**

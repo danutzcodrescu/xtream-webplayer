@@ -6,7 +6,7 @@ declare global {
   namespace App {
     interface Locals {
       session: Session | null;
-      user: User | null;
+      user: (User & { role?: string | null; banned?: boolean | null }) | null;
     }
   }
 }

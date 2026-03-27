@@ -2,7 +2,7 @@
 
 A self-hosted web player pet project. Streams live TV through a built-in HLS proxy, shows an interactive EPG (TV guide), and supports multiple users with role-based access.
 
-This project was built with AI assistance (Claude) and serves as a learning opportunity and test ground — not intended for production use.
+This project was built with AI assistance and serves as a learning opportunity and test ground — not intended for production use.
 
 ## Features
 

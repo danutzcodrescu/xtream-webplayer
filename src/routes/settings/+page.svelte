@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { authClient } from '$lib/auth-client';
 	import { invalidateAll } from '$app/navigation';
+	import { untrack } from 'svelte';
 	import {
 		Tv,
 		ArrowLeft,
@@ -20,7 +21,7 @@
 	let { data } = $props();
 
 	// ── Playlist management ────────────────────────────────────────────────
-	let playlists = $state([...data.playlists]);
+	let playlists = $state(untrack(() => data.playlists));
 	let showAddForm = $state(false);
 	let addForm = $state({ name: '', serverUrl: '', xtreamUsername: '', xtreamPassword: '' });
 	let addError = $state('');
@@ -65,7 +66,7 @@
 	}
 
 	// ── Category ordering ──────────────────────────────────────────────────
-	let selectedPlaylistId = $state([...data.playlists][0]?.id ?? '');
+	let selectedPlaylistId = $state(untrack(() => data.playlists[0]?.id ?? ''));
 	let categories = $state<
 		{ category_id: string; category_name: string; position: number; hidden: boolean }[]
 	>([]);
