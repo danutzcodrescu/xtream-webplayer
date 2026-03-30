@@ -18,7 +18,7 @@ const SECURITY_HEADERS: Record<string, string> = {
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "media-src 'self' blob:", // blob: for hls.js MSE, self for proxied streams
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https:",
     "connect-src 'self'",
   ].join("; "),
 };

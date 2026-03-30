@@ -87,7 +87,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
     const allowedHost = new URL(creds.serverUrl).hostname;
     const api = new XtreamApi(creds);
-    return proxyManifest(api.liveStreamUrl(streamId), url.origin, userId, allowedHost);
+    return proxyManifest(api.liveStreamUrl(streamId), userId, allowedHost);
   }
 
   // ── Case 2: token-based proxied manifest/segment request ─────────────────
@@ -128,7 +128,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   }
 
   log.debug({ userId, host: targetHost }, "proxying segment");
-  return proxyUrl(targetUrl, url.origin, userId, allowedHost);
+  return proxyUrl(targetUrl, userId, allowedHost);
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ async function fetchUpstream(targetUrl: string, userId: string): Promise<Respons
   return res;
 }
 
-async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: string, allowedHost: string) {
+async function proxyManifest(streamUrl: string, userId: string, allowedHost: string) {
   log.debug({ host: allowedHost }, "fetching manifest");
   const res = await fetchUpstream(streamUrl, userId);
   const ct = res.headers.get("content-type") ?? "";
@@ -194,7 +194,7 @@ async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: str
     const text = await res.text();
     const lineCount = text.split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
     log.debug({ host: finalHost, contentType: ct, segments: lineCount }, "manifest rewritten");
-    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId, finalHost), {
+    return new Response(rewriteManifest(text, finalUrl, userId, finalHost), {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache",
@@ -208,7 +208,7 @@ async function proxyManifest(streamUrl: string, proxyOrigin: string, userId: str
   });
 }
 
-async function proxyUrl(targetUrl: string, proxyOrigin: string, userId: string, allowedHost: string) {
+async function proxyUrl(targetUrl: string, userId: string, allowedHost: string) {
   const res = await fetchUpstream(targetUrl, userId);
   const ct = res.headers.get("content-type") ?? "";
   const finalUrl = res.url || targetUrl;
@@ -216,7 +216,7 @@ async function proxyUrl(targetUrl: string, proxyOrigin: string, userId: string, 
 
   if (isHlsManifest(ct, finalUrl)) {
     const text = await res.text();
-    return new Response(rewriteManifest(text, finalUrl, proxyOrigin, userId, finalHost), {
+    return new Response(rewriteManifest(text, finalUrl, userId, finalHost), {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache",
@@ -245,7 +245,6 @@ function isHlsManifest(contentType: string, urlStr: string): boolean {
 function rewriteManifest(
   content: string,
   manifestUrl: string,
-  proxyOrigin: string,
   userId: string,
   allowedHost: string,
 ): string {
@@ -272,7 +271,7 @@ function rewriteManifest(
       }
 
       const token = encryptProxyToken(absolute, userId, allowedHost);
-      return `${proxyOrigin}/api/stream?token=${encodeURIComponent(token)}`;
+      return `/api/stream?token=${encodeURIComponent(token)}`;
     })
     .join("\n");
 }
