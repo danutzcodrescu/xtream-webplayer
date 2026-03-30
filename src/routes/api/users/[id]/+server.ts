@@ -17,6 +17,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
   const body = (await request.json()) as { role?: string; banned?: boolean };
 
+  if (body.role !== undefined && body.role !== "admin" && body.role !== "user") {
+    error(400, "Invalid role");
+  }
+
   const [updated] = await db
     .update(user)
     .set({
