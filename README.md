@@ -48,7 +48,7 @@ Create a `.env` file in the project root:
 BETTER_AUTH_SECRET=your-random-secret-here
 
 # Optional overrides
-DATABASE_URL=./data/xtream.db  # SQLite file path (default: ./data/xtream.db)
+DATABASE_URL=./data/db.sqlite  # SQLite file path (default: ./data/db.sqlite)
 LOG_LEVEL=debug                # trace | debug | info | warn | error (default: debug in dev, info in prod)
 ```
 
@@ -117,7 +117,7 @@ volumes:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `BETTER_AUTH_SECRET` | Yes | — | Secret for auth token signing and AES encryption key derivation |
-| `DATABASE_URL` | No | `./data/xtream.db` | Path to the SQLite database file |
+| `DATABASE_URL` | No | `./data/db.sqlite` | Path to the SQLite database file |
 | `ORIGIN` | No | `http://localhost:3000` | Public URL of the app (required in production) |
 | `LOG_LEVEL` | No | `debug` (dev) / `info` (prod) | Pino log level |
 | `NODE_ENV` | No | — | Set to `production` to enable JSON logs and info-level default |

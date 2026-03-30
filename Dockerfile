@@ -37,7 +37,7 @@ VOLUME /app/data
 EXPOSE 3000
 
 ENV NODE_ENV=production
-ENV DATABASE_URL=/app/data/xtream.db
+ENV DATABASE_URL=/app/data/db.sqlite
 # Set ORIGIN to your public URL (required by SvelteKit for CSRF protection)
 # Override at runtime: docker run -e ORIGIN=https://player.example.com ...
 ENV ORIGIN=http://localhost:3000
