@@ -1,5 +1,5 @@
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
@@ -17,9 +17,12 @@ RUN pnpm build
 RUN pnpm prune --prod
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM node:22-alpine
+FROM node:24-alpine
 
 WORKDIR /app
+
+# su-exec for privilege dropping in entrypoint
+RUN apk add --no-cache su-exec
 
 # Run as non-root for least-privilege
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -45,6 +48,8 @@ ENV ORIGIN=http://localhost:3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-USER appuser
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "build"]
