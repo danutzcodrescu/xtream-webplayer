@@ -3,7 +3,7 @@
 	import { authClient } from '$lib/auth-client';
 	import VideoPlayer from '$lib/components/VideoPlayer.svelte';
 	import TvGuide from '$lib/components/TvGuide.svelte';
-	import { Settings, LogOut, Tv, X } from 'lucide-svelte';
+	import { Settings, LogOut, Tv, X, ChevronDown, Check, ListVideo } from 'lucide-svelte';
 
 	let { data } = $props();
 
@@ -11,6 +11,7 @@
 	// null means "user hasn't picked one yet — use the first available"
 	let userPlaylistId = $state<string | null>(null);
 	let searchQuery = $state('');
+	let playlistDropdownOpen = $state(false);
 
 	let selectedChannel = $state<{
 		stream_id: number;
@@ -46,6 +47,13 @@
 		selectedChannel = null;
 	}
 
+	function switchPlaylist(id: string) {
+		userPlaylistId = id;
+		selectedChannel = null;
+		streamUrl = null;
+		playlistDropdownOpen = false;
+	}
+
 	async function handleSignOut() {
 		await authClient.signOut();
 		goto('/login');
@@ -68,18 +76,50 @@
 			<span class="font-semibold text-sm hidden sm:block">IPTV Player</span>
 		</div>
 
-		<!-- Playlist selector -->
-		{#if data.playlists.length > 1}
-			<select
-				value={selectedPlaylistId}
-				onchange={(e) => { userPlaylistId = (e.target as HTMLSelectElement).value; selectedChannel = null; streamUrl = null; }}
-				class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white
-				       focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-40"
-			>
-				{#each data.playlists as pl}
-					<option value={pl.id}>{pl.name}</option>
-				{/each}
-			</select>
+		<!-- Playlist switcher -->
+		{#if data.playlists.length > 0}
+			<div class="relative shrink-0">
+				<button
+					onclick={() => (playlistDropdownOpen = !playlistDropdownOpen)}
+					class="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg
+					       px-3 py-1.5 text-sm text-white hover:bg-gray-700 hover:border-gray-600
+					       focus:outline-none focus:ring-2 focus:ring-indigo-500 transition max-w-48"
+					title="Switch playlist"
+				>
+					<ListVideo class="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+					<span class="truncate max-w-32">{selectedPlaylist?.name ?? 'Select playlist'}</span>
+					{#if data.playlists.length > 1}
+						<ChevronDown class="w-3.5 h-3.5 text-gray-400 shrink-0 transition-transform {playlistDropdownOpen ? 'rotate-180' : ''}" />
+					{/if}
+				</button>
+
+				{#if playlistDropdownOpen && data.playlists.length > 1}
+					<!-- Backdrop -->
+					<button
+						class="fixed inset-0 z-40"
+						onclick={() => (playlistDropdownOpen = false)}
+						aria-label="Close playlist menu"
+					></button>
+					<!-- Dropdown -->
+					<div class="absolute left-0 top-full mt-1 z-50 bg-gray-800 border border-gray-700
+					            rounded-lg shadow-xl overflow-hidden min-w-48 max-w-64">
+						{#each data.playlists as pl}
+							<button
+								onclick={() => switchPlaylist(pl.id)}
+								class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left
+								       hover:bg-gray-700 transition
+								       {pl.id === selectedPlaylistId ? 'text-white bg-gray-700/50' : 'text-gray-300'}"
+							>
+								<ListVideo class="w-3.5 h-3.5 shrink-0 {pl.id === selectedPlaylistId ? 'text-indigo-400' : 'text-gray-500'}" />
+								<span class="truncate flex-1">{pl.name}</span>
+								{#if pl.id === selectedPlaylistId}
+									<Check class="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+								{/if}
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
 		{/if}
 
 		<!-- Now-playing info -->
