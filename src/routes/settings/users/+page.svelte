@@ -3,7 +3,8 @@
 
 	let { data } = $props();
 
-	let users = $state([...data.users]);
+	let users: typeof data.users = $state([]);
+	$effect(() => { users = [...data.users]; });
 	let showAddForm = $state(false);
 	let addForm = $state({ name: '', username: '', password: '', role: 'user' });
 	let addError = $state('');
@@ -29,7 +30,7 @@
 
 		const created = await res.json();
 		users = [...users, created.user ?? created];
-		addForm = { name: '', email: '', password: '', role: 'user' };
+		addForm = { name: '', username: '', password: '', role: 'user' };
 		showAddForm = false;
 		addLoading = false;
 	}

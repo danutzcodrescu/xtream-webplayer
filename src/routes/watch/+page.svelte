@@ -3,6 +3,7 @@
 	import { authClient } from '$lib/auth-client';
 	import VideoPlayer from '$lib/components/VideoPlayer.svelte';
 	import TvGuide from '$lib/components/TvGuide.svelte';
+	import type { Channel, CatchupProgramme } from '$lib/guide-data';
 	import { Settings, LogOut, Tv, X, ChevronDown, Check, ListVideo } from 'lucide-svelte';
 
 	let { data } = $props();
@@ -13,14 +14,10 @@
 	let searchQuery = $state('');
 	let playlistDropdownOpen = $state(false);
 
-	let selectedChannel = $state<{
-		stream_id: number;
-		name: string;
-		stream_icon: string;
-		epg_channel_id: string;
-	} | null>(null);
+	let selectedChannel = $state<Channel | null>(null);
 
 	let streamUrl = $state<string | null>(null);
+	let catchupTitle = $state<string | null>(null); // non-null when playing catchup
 
 	// ── Derived ────────────────────────────────────────────────────────────────
 	// Always computed from data so it reacts to prop changes
@@ -35,16 +32,32 @@
 	);
 
 	// ── Handlers ───────────────────────────────────────────────────────────────
-	function handleChannelSelect(channel: typeof selectedChannel) {
+	function handleChannelSelect(
+		channel: Channel | null,
+		catchupProgramme?: CatchupProgramme
+	) {
 		selectedChannel = channel;
-		streamUrl = channel
-			? `/api/stream?playlistId=${selectedPlaylistId}&streamId=${channel.stream_id}`
-			: null;
+		if (!channel) {
+			streamUrl = null;
+			catchupTitle = null;
+			return;
+		}
+		if (catchupProgramme) {
+			const durationMins = Math.ceil(
+				(catchupProgramme.stop_timestamp - catchupProgramme.start_timestamp) / 60
+			);
+			streamUrl = `/api/stream?playlistId=${selectedPlaylistId}&streamId=${channel.stream_id}&start=${catchupProgramme.start_timestamp}&duration=${durationMins}`;
+			catchupTitle = catchupProgramme.title;
+		} else {
+			streamUrl = `/api/stream?playlistId=${selectedPlaylistId}&streamId=${channel.stream_id}`;
+			catchupTitle = null;
+		}
 	}
 
 	function closePlayer() {
 		streamUrl = null;
 		selectedChannel = null;
+		catchupTitle = null;
 	}
 
 	function switchPlaylist(id: string) {
@@ -136,10 +149,16 @@
 				<span class="text-sm font-medium truncate text-white/90">
 					{selectedChannel.name}
 				</span>
-				<span class="flex items-center gap-1 text-[10px] bg-red-600/80 text-red-100 px-1.5 py-0.5 rounded font-medium shrink-0">
-					<span class="w-1.5 h-1.5 rounded-full bg-red-300 animate-pulse inline-block"></span>
-					LIVE
-				</span>
+				{#if catchupTitle}
+					<span class="flex items-center gap-1 text-[10px] bg-amber-600/80 text-amber-100 px-1.5 py-0.5 rounded font-medium shrink-0">
+						↺ REPLAY
+					</span>
+				{:else}
+					<span class="flex items-center gap-1 text-[10px] bg-red-600/80 text-red-100 px-1.5 py-0.5 rounded font-medium shrink-0">
+						<span class="w-1.5 h-1.5 rounded-full bg-red-300 animate-pulse inline-block"></span>
+						LIVE
+					</span>
+				{/if}
 			</div>
 		{/if}
 
@@ -190,7 +209,7 @@
 		{#if streamUrl}
 			<div class="shrink-0 bg-black flex justify-center" style="height: 40vh">
 				<div class="h-full flex" style="aspect-ratio: 16/9">
-					<VideoPlayer {streamUrl} />
+					<VideoPlayer {streamUrl} isCatchup={catchupTitle !== null} />
 				</div>
 			</div>
 		{/if}

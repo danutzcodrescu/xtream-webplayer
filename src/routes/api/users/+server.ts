@@ -57,10 +57,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       email: syntheticEmail,
       password: body.password,
       role,
-      // @ts-expect-error — username field added by username plugin
-      username: body.username,
+      data: { username: body.username },
     },
-    headers: new Headers(),
+    headers: request.headers,
   });
 
   log.info({ username: body.username, role, createdBy: locals.user?.id }, "user created");

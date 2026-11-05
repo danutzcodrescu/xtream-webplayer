@@ -2,7 +2,7 @@ import { auth } from "$lib/server/auth";
 import { db } from "$lib/server/db";
 import { user } from "$lib/server/db/schema";
 import { count } from "drizzle-orm";
-import { redirect, type Handle } from "@sveltejs/kit";
+import { error, redirect, type Handle } from "@sveltejs/kit";
 import { logger } from "$lib/server/logger";
 
 const log = logger.child({ module: "hooks" });
@@ -38,8 +38,20 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   // Attach session/user to locals
   const session = await auth.api.getSession({ headers: event.request.headers });
-  event.locals.session = session?.session ?? null;
-  event.locals.user = session?.user ?? null;
+  const banned = !!session?.user.banned;
+  event.locals.session = banned ? null : (session?.session ?? null);
+  event.locals.user = banned ? null : (session?.user ?? null);
+
+  // Auth endpoints perform their own authorization, but legacy banned sessions
+  // must not bypass this guard through the SDK's administrative endpoints.
+  if (
+    banned &&
+    path.startsWith("/api/auth/") &&
+    !path.startsWith("/api/auth/sign-in/") &&
+    path !== "/api/auth/sign-out"
+  ) {
+    error(403, "Account is banned");
+  }
 
   // Allow public paths and static assets
   if (PUBLIC_PATHS.some((p) => path.startsWith(p)) || path.startsWith("/_app")) {
@@ -55,6 +67,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 
   // Require auth for everything else
+  if (banned) error(403, "Account is banned");
   if (!event.locals.user) {
     log.debug({ path }, "unauthenticated request, redirecting to login");
     redirect(302, "/login");

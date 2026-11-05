@@ -20,6 +20,8 @@ export interface XtreamStream {
   added: string;
   category_id: string;
   direct_source: string;
+  tv_archive?: number; // 1 = catchup/timeshift available
+  tv_archive_duration?: number; // days of catchup history available
 }
 
 export interface XtreamEpgEntry {
@@ -33,6 +35,7 @@ export interface XtreamEpgEntry {
   channel_id: string;
   start_timestamp: number;
   stop_timestamp: number;
+  has_archive?: number; // 1 = catchup available for this specific programme
 }
 
 export interface XtreamUserInfo {
@@ -75,44 +78,33 @@ export class XtreamApi {
     this.base = creds.serverUrl.replace(/\/$/, "");
   }
 
-  private async call<T>(action: string, params: Record<string, string> = {}): Promise<T> {
+  private async call<T>(action?: string, params: Record<string, string> = {}): Promise<T> {
     const qs = new URLSearchParams({
       username: this.creds.username,
       password: this.creds.password,
-      action,
+      ...(action && { action }),
       ...params,
     });
+    const operation = action ?? "authenticate";
     const t0 = Date.now();
-    log.debug({ action, server: this.base }, "xtream api call");
+    log.debug({ action: operation, server: this.base }, "xtream api call");
     const res = await fetch(`${this.base}/player_api.php?${qs}`, {
       headers: { "User-Agent": "IPTV-WebPlayer/1.0" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) {
-      log.warn({ action, server: this.base, status: res.status, ms: Date.now() - t0 }, "xtream api call failed");
-      throw new Error(`Xtream API ${action} failed: ${res.status}`);
+      log.warn(
+        { action: operation, server: this.base, status: res.status, ms: Date.now() - t0 },
+        "xtream api call failed",
+      );
+      throw new Error(`Xtream API ${operation} failed: ${res.status}`);
     }
-    log.debug({ action, ms: Date.now() - t0 }, "xtream api call ok");
+    log.debug({ action: operation, ms: Date.now() - t0 }, "xtream api call ok");
     return res.json() as Promise<T>;
   }
 
-  async authenticate(): Promise<XtreamAuthResponse> {
-    const qs = new URLSearchParams({
-      username: this.creds.username,
-      password: this.creds.password,
-    });
-    const t0 = Date.now();
-    log.debug({ server: this.base }, "xtream authenticate");
-    const res = await fetch(`${this.base}/player_api.php?${qs}`, {
-      headers: { "User-Agent": "IPTV-WebPlayer/1.0" },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      log.warn({ server: this.base, status: res.status, ms: Date.now() - t0 }, "xtream auth failed");
-      throw new Error(`Xtream auth failed: ${res.status}`);
-    }
-    log.debug({ server: this.base, ms: Date.now() - t0 }, "xtream auth ok");
-    return res.json() as Promise<XtreamAuthResponse>;
+  authenticate(): Promise<XtreamAuthResponse> {
+    return this.call<XtreamAuthResponse>();
   }
 
   getLiveCategories(): Promise<XtreamCategory[]> {
@@ -133,9 +125,37 @@ export class XtreamApi {
     });
   }
 
+  /**
+   * Full EPG table — includes past programmes, unlike get_short_epg.
+   * Not supported by all providers; caller should catch and fall back.
+   */
+  getSimpleDataTable(streamId: number): Promise<{ epg_listings: XtreamEpgEntry[] }> {
+    return this.call("get_simple_data_table", {
+      live_stream_id: String(streamId),
+    });
+  }
+
   /** Live HLS stream URL */
   liveStreamUrl(streamId: number): string {
     return `${this.base}/live/${this.creds.username}/${this.creds.password}/${streamId}.m3u8`;
+  }
+
+  /**
+   * Timeshift/catchup HLS URL.
+   * @param startDate  UTC start time of the programme
+   * @param durationMins  How many minutes of content to serve
+   */
+  catchupStreamUrl(streamId: number, startDate: Date, durationMins: number): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const start =
+      [
+        startDate.getUTCFullYear(),
+        pad(startDate.getUTCMonth() + 1),
+        pad(startDate.getUTCDate()),
+      ].join("-") +
+      ":" +
+      [pad(startDate.getUTCHours()), pad(startDate.getUTCMinutes())].join("-");
+    return `${this.base}/timeshift/${this.creds.username}/${this.creds.password}/${durationMins}/${start}/${streamId}.m3u8`;
   }
 
   xmltvUrl(): string {

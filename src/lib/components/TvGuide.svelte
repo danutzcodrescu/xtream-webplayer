@@ -1,30 +1,8 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { createVirtualizer } from '@tanstack/svelte-virtual';
-
-	// ── Types ──────────────────────────────────────────────────────────────────
-	interface Category {
-		category_id: string;
-		category_name: string;
-		hidden: boolean;
-	}
-
-	interface Channel {
-		stream_id: number;
-		name: string;
-		stream_icon: string;
-		category_id: string;
-		epg_channel_id: string;
-	}
-
-	interface EpgEntry {
-		id: string;
-		title: string;
-		description: string;
-		start_timestamp: number;
-		stop_timestamp: number;
-	}
+	import { GuideData, type Channel, type EpgEntry, type CatchupProgramme } from '$lib/guide-data';
 
 	// ── Props ──────────────────────────────────────────────────────────────────
 	let {
@@ -35,7 +13,7 @@
 	}: {
 		playlistId: string;
 		selectedChannel: Channel | null;
-		onSelect: (ch: Channel) => void;
+		onSelect: (ch: Channel, catchupProgramme?: CatchupProgramme) => void;
 		searchQuery?: string;
 	} = $props();
 
@@ -45,7 +23,7 @@
 	const ROW_H = 68; // row height
 	const RULER_H = 40; // time ruler height
 	const BUFFER = 5; // virtual scroll row buffer
-	const MINS_BACK = 60; // minutes before now visible
+	const MINS_BACK = 7 * 24 * 60; // 7 days of history for catchup scrolling
 	const MINS_AHEAD = 11 * 60; // minutes after now visible
 	const TOTAL_MINS = MINS_BACK + MINS_AHEAD;
 	const TOTAL_W = TOTAL_MINS * PPM;
@@ -66,58 +44,19 @@
 	});
 
 	// ── Data ───────────────────────────────────────────────────────────────────
-	let categories = $state<Category[]>([]);
-	let channels = $state<Channel[]>([]);
-	let allChannels = $state<Channel[]>([]); // all channels across all categories, for global search
-	let activeCatId = $state('');
-	let epg = $state<Record<number, EpgEntry[]>>({});
-	const loadedEpg = new Set<number>();
-	let loadingChannels = $state(false);
+	const guide = new GuideData();
+	const categories = $derived($guide.categories);
+	const channels = $derived($guide.channels);
+	const activeCatId = $derived($guide.activeCatId);
+	const epg = $derived($guide.epg);
+	const loadingChannels = $derived($guide.loadingChannels || $guide.loadingCategories);
 
 	const filteredChannels = $derived(channels);
 
 	const catMap = $derived(new Map(categories.map((c) => [c.category_id, c.category_name])));
 
-	/** Returns true if every word in the query appears somewhere in text. */
-	function matchesWords(text: string, words: string[]): boolean {
-		const lower = text.toLowerCase();
-		return words.every((w) => lower.includes(w));
-	}
-
-	const searchResults = $derived.by(() => {
-		const q = searchQuery.trim().toLowerCase();
-		if (!q) return [];
-		const words = q.split(/\s+/);
-
-		const results: { channel: Channel; matchedProgramme: string | null }[] = [];
-		const seen = new Set<number>();
-
-		// First pass: channel name matches
-		for (const ch of allChannels) {
-			if (matchesWords(ch.name, words)) {
-				results.push({ channel: ch, matchedProgramme: null });
-				seen.add(ch.stream_id);
-			}
-		}
-
-		// Second pass: EPG programme title matches (already loaded in memory)
-		for (const [streamIdStr, programmes] of Object.entries(epg)) {
-			const streamId = Number(streamIdStr);
-			if (seen.has(streamId)) continue;
-			for (const prog of programmes) {
-				if (matchesWords(prog.title, words)) {
-					const ch = allChannels.find((c) => c.stream_id === streamId);
-					if (ch) {
-						results.push({ channel: ch, matchedProgramme: prog.title });
-						seen.add(streamId);
-					}
-					break;
-				}
-			}
-		}
-
-		return results;
-	});
+	const searchResults = $derived($guide.searchResults);
+	$effect(() => guide.setSearch(searchQuery, nowMs));
 
 	// ── Search results virtual list ─────────────────────────────────────────────
 	const ITEM_H = 60; // px — fixed row height for the search list
@@ -160,7 +99,7 @@
 
 	// Load EPG for newly visible channels
 	$effect(() => {
-		for (const ch of visibleChs) maybeLoadEpg(ch.stream_id);
+		for (const ch of visibleChs) void guide.loadEpg(ch.stream_id, nowMs);
 	});
 
 	// ── Helpers ────────────────────────────────────────────────────────────────
@@ -189,54 +128,29 @@
 		return dur > 0 ? Math.min(100, ((now - prog.start_timestamp) / dur) * 100) : 0;
 	}
 
+	/** True if this past programme can be replayed via catchup */
+	function isCatchupAvailable(ch: Channel, prog: EpgEntry): boolean {
+		if (!isPast(prog)) return false;
+		// Per-programme flag from get_simple_data_table takes precedence
+		if (prog.has_archive !== undefined) return prog.has_archive === 1;
+		// Fall back to channel-level flag + age check
+		if (!ch.tv_archive) return false;
+		const maxDays = ch.tv_archive_duration ?? 7;
+		const ageDays = (nowMs / 1000 - prog.start_timestamp) / 86400;
+		return ageDays <= maxDays;
+	}
+
 	function formatTime(d: Date): string {
 		return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 	}
 
-	// ── Data loading ───────────────────────────────────────────────────────────
-	async function loadCategories(pid: string) {
-		const r = await fetch(`/api/categories?playlistId=${pid}`);
-		if (r.ok) {
-			categories = (await r.json()).filter((c: Category) => !c.hidden);
-			if (categories.length > 0 && activeCatId === '') {
-				activeCatId = categories[0].category_id;
-				loadChannels(pid, categories[0].category_id);
-			}
-		}
-	}
-
-	async function loadChannels(pid: string, catId: string) {
-		loadingChannels = true;
-		epg = {};
-		loadedEpg.clear();
-		const p = new URLSearchParams({ playlistId: pid });
-		if (catId) p.set('categoryId', catId);
-		const r = await fetch(`/api/channels?${p}`);
-		if (r.ok) channels = await r.json();
-		else channels = [];
-		loadingChannels = false;
-	}
-
-	let allChannelsLoading = false;
-
-	$effect(() => {
-		if (searchQuery.trim().length > 0) ensureAllChannels();
-	});
-
-	async function ensureAllChannels() {
-		if (allChannels.length > 0 || allChannelsLoading) return;
-		allChannelsLoading = true;
-		const r = await fetch(`/api/channels?playlistId=${playlistId}`);
-		if (r.ok) allChannels = await r.json();
-		allChannelsLoading = false;
-	}
-
 	async function selectFromSearch(ch: Channel) {
+		const pid = playlistId;
 		searchQuery = '';
-		activeCatId = ch.category_id;
 		onSelect(ch);
-		await loadChannels(playlistId, ch.category_id);
+		const current = await guide.selectCategory(ch.category_id);
 		await tick(); // wait for guide to re-render before scrolling
+		if (!current || playlistId !== pid || activeCatId !== ch.category_id) return;
 		const idx = channels.findIndex((c) => c.stream_id === ch.stream_id);
 		if (idx >= 0 && guideEl) {
 			const target = Math.max(0, idx * ROW_H - viewH / 2 + ROW_H / 2);
@@ -245,23 +159,18 @@
 		}
 	}
 
-	function maybeLoadEpg(streamId: number) {
-		if (loadedEpg.has(streamId)) return;
-		loadedEpg.add(streamId);
-		// Use short EPG with limit=12 (~6-12h coverage) — more widely supported
-		// than get_simple_data_table across Xtream providers
-		fetch(`/api/epg?playlistId=${playlistId}&streamId=${streamId}&limit=12`)
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: EpgEntry[]) => {
-				epg = { ...epg, [streamId]: data };
-			})
-			.catch(() => {
-				epg = { ...epg, [streamId]: [] };
+	function handleProgrammeClick(ch: Channel, prog: EpgEntry) {
+		if (isCatchupAvailable(ch, prog)) {
+			onSelect(ch, {
+				start_timestamp: prog.start_timestamp,
+				stop_timestamp: prog.stop_timestamp,
+				title: prog.title,
 			});
-	}
-
-	function handleProgramClick(ch: Channel) {
-		onSelect(ch);
+		} else if (!isPast(prog) || isCurrent(prog)) {
+			// Live or currently-airing — start the live stream
+			onSelect(ch);
+		}
+		// Past programme without catchup: do nothing (button is visually disabled)
 	}
 
 	function scrollToNow() {
@@ -276,25 +185,26 @@
 	// Reload everything when playlistId changes
 	$effect(() => {
 		const pid = playlistId;
-		if (!pid) return;
-		activeCatId = '';
 		searchQuery = '';
-		channels = [];
-		allChannels = [];
-		allChannelsLoading = false;
-		categories = [];
-		epg = {};
-		loadedEpg.clear();
-		loadCategories(pid);
+		void guide.setPlaylist(pid);
+	});
+	onDestroy(() => guide.dispose());
+	$effect(() => {
+		const el = guideEl;
+		if (!el) return;
+		viewH = el.clientHeight;
+		scrollTop = el.scrollTop;
+		const observer = new ResizeObserver(() => { viewH = el.clientHeight; });
+		observer.observe(el);
+		return () => observer.disconnect();
 	});
 
 	onMount(() => {
-		viewH = guideEl.clientHeight;
-		setTimeout(scrollToNow, 150);
+		const initialScroll = setTimeout(scrollToNow, 150);
 		const timer = setInterval(() => {
 			nowMs = Date.now();
 		}, 30_000);
-		return () => clearInterval(timer);
+		return () => { clearInterval(timer); clearTimeout(initialScroll); };
 	});
 </script>
 
@@ -312,8 +222,9 @@
 					: 'text-gray-400 hover:text-white hover:bg-gray-800'}"
 				onclick={() => {
 					searchQuery = '';
-					activeCatId = cat.category_id;
-					loadChannels(playlistId, cat.category_id);
+					void guide.selectCategory(cat.category_id);
+					if (guideEl) guideEl.scrollTop = 0;
+					scrollTop = 0;
 				}}
 			>{cat.category_name}</button>
 		{/each}
@@ -330,11 +241,24 @@
 			Now
 		</button>
 	</div>
+	{#if $guide.error}
+		<div role="alert" class="px-3 py-2 text-sm text-red-300">
+			{$guide.error} <button class="underline" onclick={() => guide.retry()}>Retry</button>
+		</div>
+	{/if}
 
 	<!-- ── Search results (virtualized) ────────────────────────────────────── -->
 	{#if searchQuery.trim()}
+		<p class="px-3 py-2 text-xs text-gray-400">Searches all Channel names and currently airing Programmes in already-loaded EPG.</p>
+		{#if $guide.searchError}
+			<div role="alert" class="px-3 py-2 text-sm text-red-300">
+				{$guide.searchError} <button class="underline" onclick={() => guide.ensureAllChannels()}>Retry</button>
+			</div>
+		{/if}
 		<div bind:this={searchListEl} class="flex-1 overflow-y-auto min-h-0">
-			{#if searchResults.length === 0}
+			{#if $guide.loadingSearch}
+				<p class="px-3 py-8 text-sm text-gray-400">Loading Channels…</p>
+			{:else if searchResults.length === 0}
 				<div class="flex items-center justify-center h-32 text-gray-500 text-sm">
 					No channels found
 				</div>
@@ -390,6 +314,8 @@
 	<!-- ── Guide grid ──────────────────────────────────────────────────────── -->
 	<div
 		bind:this={guideEl}
+		role="region"
+		aria-label="TV guide"
 		class="flex-1 overflow-auto min-h-0"
 		onscroll={handleScroll}
 	>
@@ -440,7 +366,7 @@
 
 			<!-- Channel rows -->
 			{#each visibleChs as ch (ch.stream_id)}
-				{@const programs = epg[ch.stream_id]}
+				{@const programmes = epg[ch.stream_id]}
 				{@const isSelected = selectedChannel?.stream_id === ch.stream_id}
 
 				<div
@@ -478,7 +404,7 @@
 						</span>
 					</button>
 
-					<!-- Programs area -->
+					<!-- Programmes area -->
 					<div class="relative shrink-0 overflow-hidden" style="width:{TOTAL_W}px">
 						<!-- Now line -->
 						<div
@@ -486,30 +412,37 @@
 							style="left:{nowPx}px"
 						></div>
 
-						{#if programs === undefined}
+						{#if $guide.epgErrors[ch.stream_id]}
+							<button class="absolute inset-0 px-4 text-left text-xs text-red-300" onclick={() => guide.loadEpg(ch.stream_id, nowMs, true)}>EPG unavailable — retry</button>
+						{:else if programmes === undefined}
 							<!-- Skeleton while loading EPG -->
 							<div class="absolute inset-1 rounded-md bg-gray-800/60 animate-pulse"></div>
 
-						{:else if programs.length === 0}
+						{:else if programmes.length === 0}
 							<div class="absolute inset-0 flex items-center px-4 text-xs text-gray-700 italic">
 								No programme information
 							</div>
 
 						{:else}
-							{#each programs as prog (prog.id)}
+							{#each programmes as prog (prog.id)}
 								{@const cur = isCurrent(prog)}
 								{@const past = isPast(prog)}
+								{@const catchup = isCatchupAvailable(ch, prog)}
+								{@const clickable = cur || !past || catchup}
 							<button
 									class="absolute top-1.5 bottom-1.5 overflow-hidden rounded-md text-left
 									       text-xs transition-all group
 									       {cur
 										? 'bg-indigo-800/90 hover:bg-indigo-700 border border-indigo-500/70'
-										: past
-												? 'bg-gray-900/60 border border-gray-800/30 opacity-60'
-												: 'bg-gray-800 hover:bg-gray-700 border border-gray-700/60'}"
+										: catchup
+												? 'bg-amber-900/50 hover:bg-amber-800/60 border border-amber-700/50'
+												: past
+														? 'bg-gray-900/60 border border-gray-800/30 opacity-50 cursor-default'
+														: 'bg-gray-800 hover:bg-gray-700 border border-gray-700/60'}"
 									style={progStyle(prog)}
-									onclick={() => handleProgramClick(ch)}
-									title={prog.title}
+									onclick={() => handleProgrammeClick(ch, prog)}
+									title={catchup ? `▶ Replay: ${prog.title}` : prog.title}
+									disabled={!clickable}
 								>
 									<!-- Progress bar for current programme -->
 									{#if cur}
@@ -520,14 +453,21 @@
 										></div>
 									{/if}
 
+									<!-- Catchup indicator -->
+									{#if catchup}
+										<div class="absolute top-1 right-1 text-amber-400 pointer-events-none leading-none">
+											↺
+										</div>
+									{/if}
+
 									<div class="px-2 py-1 h-full flex flex-col justify-center gap-0.5 min-w-0">
 										<span
 											class="font-semibold truncate leading-tight
-											       {cur ? 'text-white' : past ? 'text-gray-500' : 'text-gray-200'}"
+											       {cur ? 'text-white' : catchup ? 'text-amber-200' : past ? 'text-gray-500' : 'text-gray-200'}"
 										>
 											{prog.title}
 										</span>
-										<span class="text-gray-500 truncate leading-tight text-[10px]">
+										<span class="truncate leading-tight text-[10px] {catchup ? 'text-amber-600' : 'text-gray-500'}">
 											{formatTime(new Date(prog.start_timestamp * 1000))}
 										</span>
 									</div>

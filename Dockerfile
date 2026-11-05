@@ -31,6 +31,7 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 COPY --from=builder /app/node_modules ./node_modules
 # Copy adapter-node server bundle
 COPY --from=builder /app/build ./build
+COPY --from=builder /app/drizzle ./drizzle
 COPY package.json ./
 
 # SQLite database lives here — mount a volume to persist data

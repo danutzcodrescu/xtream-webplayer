@@ -8,7 +8,7 @@ This project was built with AI assistance and serves as a learning opportunity a
 
 - **HLS proxy** — all stream traffic is routed server-side; server credentials never reach the browser
 - **EPG / TV guide** — scrollable programme grid with live progress indicators and a "now" indicator
-- **Search** — search channels by name or current programme title across all categories
+- **Search** — search Channel names across all Categories, plus currently airing Programme titles in already-loaded EPG (coverage is labelled in the search view)
 - **Multiple playlists** — add multiple stream sources, switch between them
 - **Multi-user** — admin-managed accounts with `user` and `admin` roles
 - **Encrypted credentials** — server URLs and credentials are stored AES-256-GCM encrypted at rest
@@ -16,15 +16,15 @@ This project was built with AI assistance and serves as a learning opportunity a
 
 ## Tech stack
 
-| Layer | Technology |
-|---|---|
-| Framework | [SvelteKit](https://kit.svelte.dev/) 2 + Svelte 5 (runes) |
-| Adapter | `@sveltejs/adapter-node` |
-| Database | SQLite via Node.js `node:sqlite` + [Drizzle ORM](https://orm.drizzle.team/) |
-| Auth | [Better Auth](https://better-auth.com/) |
-| HLS playback | [hls.js](https://github.com/video-dev/hls.js/) |
-| Styling | Tailwind CSS |
-| Logging | [pino](https://getpino.io/) |
+| Layer        | Technology                                                                  |
+| ------------ | --------------------------------------------------------------------------- |
+| Framework    | [SvelteKit](https://kit.svelte.dev/) 2 + Svelte 5 (runes)                   |
+| Adapter      | `@sveltejs/adapter-node`                                                    |
+| Database     | SQLite via Node.js `node:sqlite` + [Drizzle ORM](https://orm.drizzle.team/) |
+| Auth         | [Better Auth](https://better-auth.com/)                                     |
+| HLS playback | [hls.js](https://github.com/video-dev/hls.js/)                              |
+| Styling      | Tailwind CSS                                                                |
+| Logging      | [pino](https://getpino.io/)                                                 |
 
 ## Requirements
 
@@ -114,13 +114,14 @@ volumes:
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `BETTER_AUTH_SECRET` | Yes | — | Secret for auth token signing and AES encryption key derivation |
-| `DATABASE_URL` | No | `./data/db.sqlite` | Path to the SQLite database file |
-| `ORIGIN` | No | `http://localhost:3000` | Public URL of the app (required in production) |
-| `LOG_LEVEL` | No | `debug` (dev) / `info` (prod) | Pino log level |
-| `NODE_ENV` | No | — | Set to `production` to enable JSON logs and info-level default |
+| Variable             | Required | Default                                                   | Description                                                                             |
+| -------------------- | -------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET` | Yes      | —                                                         | Secret for auth token signing and AES encryption key derivation                         |
+| `DATABASE_URL`       | No       | `./data/db.sqlite`                                        | Path to the SQLite database file                                                        |
+| `ORIGIN`             | No       | `http://localhost:3000`                                   | Public URL used for SvelteKit and authentication origin checks (required in production) |
+| `BETTER_AUTH_URL`    | No       | `ORIGIN`, or `http://localhost:5173` in local development | Optional explicit authentication URL override                                           |
+| `LOG_LEVEL`          | No       | `debug` (dev) / `info` (prod)                             | Pino log level                                                                          |
+| `NODE_ENV`           | No       | —                                                         | Set to `production` to enable JSON logs and info-level default                          |
 
 ## First-time setup
 
@@ -128,6 +129,8 @@ volumes:
 2. Create your admin account
 3. Go to **Settings → Playlists** and add your stream server details
 4. Return to the watch page, select a playlist, and pick a channel
+
+Public registration is available only while the database has no users. Once the first account exists, only administrators can create further accounts. Initial signup requests are serialized within the app process so simultaneous setup requests cannot create multiple initial accounts.
 
 ## User management
 
@@ -137,6 +140,16 @@ Admins can manage users at **Settings → Users**:
 - Assign `user` or `admin` roles
 - Ban / unban accounts
 - Delete accounts
+
+Banning an account revokes its existing sessions. Unbanning permits a fresh login; it does not restore old sessions. The request guard also rejects pre-existing sessions belonging to accounts marked banned by older versions, including access through the authentication module's administrative endpoints.
+
+## Database migrations
+
+`src/lib/server/db/schema.ts` is the schema source. After changing it, run `pnpm db:generate` and commit the generated SQL and metadata in `drizzle/`. Do not hand-edit an already-applied migration.
+
+Startup applies pending migrations automatically in a transaction; no separate deployment migration command is required. Existing installations without a migration journal are adopted once using the generated initial schema, preserving their records and adding missing legacy columns. Plaintext legacy server URLs are encrypted during the same transaction; migration failures stop startup instead of being silently ignored. Back up the database before schema upgrades.
+
+Run `node build` from the project root so the `drizzle/` directory is available. The Docker image includes this directory.
 
 ## Logging
 
@@ -150,7 +163,31 @@ LOG_LEVEL=debug node build
 node build | jq 'select(.module=="stream")'
 ```
 
-Log modules: `db`, `hooks`, `stream`, `channels`, `categories`, `epg`, `playlists`, `users`, `setup`.
+Log modules: `db`, `hooks`, `stream`, `xtream`, `playlists`, `users`, `setup`. Cached provider data and Playlist mutations are logged by `playlists`.
+
+## Tests
+
+```bash
+pnpm test          # deterministic Vitest suite; isolated in-memory SQLite
+pnpm test:watch    # watch mode
+pnpm lint
+pnpm exec playwright install chromium  # one-time browser setup
+pnpm test:browser                     # guide scrolling + CDN settings
+```
+
+Tests exercise owned Playlist data, the HLS proxy request interface, and Playlist-scoped guide state. Provider responses are fixtures; no real provider credentials or existing database are used.
+
+Account regressions exercise real authentication/user handlers and the request guard, including closed registration, production origins, administrator-created username logins, and session revocation. Startup tests cover fresh and legacy databases and repeated migrations. Channel reads return only the browser-facing fields, excluding provider stream URLs and unknown transport metadata.
+
+The browser check starts its own app and provider fixture, upgrades an isolated legacy Playlist table, and checks search selection, row scrolling, and CDN host editing. Its database and artifacts live in the OS temp directory. To use an existing Chromium installation instead of downloading one, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable.
+
+## CDN host settings
+
+Streaming requests may use the Playlist server's hostname and any **Allowed CDN hosts** explicitly configured in **Settings → Playlists**. Enter exact hostnames separated by commas, without schemes, ports, paths, or wildcards. Every redirect and manifest URI is checked before fetching; adding a CDN does not give it the provider's cookies. Hostnames cover all HTTP/HTTPS ports for providers that change ports during playback.
+
+Existing Playlists start with no additional CDN hosts. Providers that redirect to another hostname require that hostname to be added before playback works. Changing these settings takes effect on subsequent token requests. Restart playback after upgrading: older proxy tokens do not include Playlist identity and are intentionally rejected.
+
+Categories and Channels are cached for six hours; EPG for five minutes. Ownership is checked before every cached read. Failed requests are not cached as empty EPG. The guide ignores obsolete Playlist/Category responses, retains loaded EPG across Category changes, and offers retries after loading failures.
 
 ## Project structure
 
@@ -163,12 +200,14 @@ src/
 │   │   └── VideoPlayer.svelte
 │   └── server/
 │       ├── auth.ts          # Better Auth configuration
-│       ├── cache.ts         # In-memory TTL cache (categories, channels, EPG)
-│       ├── crypto.ts        # AES-256-GCM helpers + proxy token encryption
+│       ├── playlist-data.ts # Owned Playlist reads, cache lifetime, mutations
+│       ├── crypto.ts        # AES-256-GCM encryption primitives
 │       ├── db/              # SQLite setup, schema, Drizzle client
 │       ├── epg.ts           # EPG utilities
 │       ├── logger.ts        # Pino root logger
-│       ├── playlist.ts      # Playlist credential helper
+│       ├── playlist.ts      # Production Playlist module configuration
+│       ├── stream-proxy.ts  # Redirects, cookies, manifest rewriting, tokens
+│       ├── stream-policy.ts # Exact CDN host validation and stream URL policy
 │       └── xtream.ts        # Stream server API client
 └── routes/
     ├── api/
@@ -188,7 +227,8 @@ src/
 
 - Server credentials are encrypted at rest (AES-256-GCM) — the encryption key is derived from `BETTER_AUTH_SECRET`
 - The HLS proxy rewrites segment URLs into signed tokens so credentials never leave the server
-- All proxied requests are validated against a host allowlist to prevent SSRF
+- Streaming requests, including every redirect, are restricted to the Playlist host and explicitly allowed CDN hosts
+- Proxy tokens are encrypted and bound to a user and Playlist; ownership and current host settings are checked again on every request
 - A strict Content Security Policy is applied to all responses
 
 ## License

@@ -1,12 +1,19 @@
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, username } from "better-auth/plugins";
 import { env } from "$env/dynamic/private";
 import { db } from "./db/index.js";
 import * as schema from "./db/schema.js";
+import { count } from "drizzle-orm";
 
 function createAuth() {
-  if (!env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET environment variable is required");
+  if (!env.BETTER_AUTH_SECRET)
+    throw new Error("BETTER_AUTH_SECRET environment variable is required");
+  const baseURL = env.BETTER_AUTH_URL || env.ORIGIN || "http://localhost:5173";
+  const trustedOrigins = [
+    ...new Set([new URL(baseURL).origin, ...(env.ORIGIN ? [new URL(env.ORIGIN).origin] : [])]),
+  ];
   return betterAuth({
     database: drizzleAdapter(db, {
       provider: "sqlite",
@@ -20,6 +27,17 @@ function createAuth() {
     emailAndPassword: {
       enabled: true,
     },
+    hooks: {
+      before: createAuthMiddleware(async (context) => {
+        if (context.path.startsWith("/sign-up/")) {
+          const [{ value: userCount }] = await db.select({ value: count() }).from(schema.user);
+          if (userCount > 0)
+            throw new APIError("FORBIDDEN", {
+              message: "Registration is closed; ask an administrator to create your account",
+            });
+        }
+      }),
+    },
     plugins: [
       username(),
       admin({
@@ -28,8 +46,9 @@ function createAuth() {
       }),
     ],
     secret: env.BETTER_AUTH_SECRET,
-    baseURL: env.BETTER_AUTH_URL ?? "http://localhost:5173",
-    trustedOrigins: [env.BETTER_AUTH_URL ?? "http://localhost:5173"],
+    advanced: { disableOriginCheck: false },
+    baseURL,
+    trustedOrigins,
   });
 }
 

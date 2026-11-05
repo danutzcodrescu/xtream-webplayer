@@ -12,7 +12,7 @@
 		AlertTriangle
 	} from 'lucide-svelte';
 
-	let { streamUrl }: { streamUrl: string | null } = $props();
+	let { streamUrl, isCatchup = false }: { streamUrl: string | null; isCatchup?: boolean } = $props();
 
 	// ── Refs ──────────────────────────────────────────────────────────────
 	let videoEl: HTMLVideoElement = $state()!;
@@ -64,13 +64,21 @@
 		videoEl.volume = volume;
 
 		if (Hls.isSupported()) {
-			hlsInstance = new Hls({
+			hlsInstance = new Hls(isCatchup ? {
+				// Catchup/timeshift: treat as VOD, start from beginning
+				maxBufferLength: 60,
+				maxMaxBufferLength: 120,
+				startPosition: 0,
+				enableWorker: true,
+				lowLatencyMode: false,
+			} : {
+				// Live stream
 				maxBufferLength: 30,
 				maxMaxBufferLength: 60,
 				liveSyncDurationCount: 3,
 				liveMaxLatencyDurationCount: 10,
 				enableWorker: true,
-				lowLatencyMode: false
+				lowLatencyMode: false,
 			});
 
 			hlsInstance.loadSource(url);
@@ -90,16 +98,20 @@
 					loading = false;
 					switch (data.type) {
 						case Hls.ErrorTypes.NETWORK_ERROR:
-							error = 'Network error — stream unavailable';
+							error = isCatchup
+								? 'Replay unavailable — recording not found or provider error'
+								: 'Network error — stream unavailable';
 							break;
 						case Hls.ErrorTypes.MEDIA_ERROR:
-							if (!mediaErrorRecovering) {
+							if (!isCatchup && !mediaErrorRecovering) {
+								// Try recovery once for live streams
 								mediaErrorRecovering = true;
 								hlsInstance?.recoverMediaError();
 							} else {
-								// Recovery failed — give up
 								mediaErrorRecovering = false;
-								error = 'Media error — stream cannot be decoded';
+								error = isCatchup
+									? 'Replay unavailable — content may not be recorded'
+									: 'Media error — stream cannot be decoded';
 							}
 							break;
 						default:

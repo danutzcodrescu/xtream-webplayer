@@ -76,6 +76,10 @@ export const playlist = sqliteTable("playlist", {
   serverUrl: text("serverUrl").notNull(),
   xtreamUsername: text("xtreamUsername").notNull(),
   xtreamPassword: text("xtreamPassword").notNull(),
+  allowedCdnHosts: text("allowedCdnHosts", { mode: "json" })
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'`),
   createdAt: integer("createdAt", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
