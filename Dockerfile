@@ -1,12 +1,12 @@
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM node:24-alpine AS builder
+FROM node:alpine AS builder
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+RUN npm install --global pnpm@latest
 
 # Install all deps (including dev)
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Build the SvelteKit app
@@ -17,7 +17,7 @@ RUN pnpm build
 RUN pnpm prune --prod
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM node:24-alpine
+FROM node:alpine
 
 WORKDIR /app
 

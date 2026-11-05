@@ -28,8 +28,8 @@ This project was built with AI assistance and serves as a learning opportunity a
 
 ## Requirements
 
-- Node.js 22+
-- pnpm 9
+- Node.js (latest stable)
+- pnpm (latest stable)
 
 ## Getting started
 
