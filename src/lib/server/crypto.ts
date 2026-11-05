@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
-import { env } from "$env/dynamic/private";
+import * as env from "$app/env/private";
 
 /** Derives a 32-byte AES key from BETTER_AUTH_SECRET via SHA-256 */
 function getKey(): Buffer {

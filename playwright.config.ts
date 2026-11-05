@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { defineConfig } from "@playwright/test";
 
 const baseURL = "http://127.0.0.1:5182";
+const production = process.env.PLAYWRIGHT_TEST_PRODUCTION === "1";
 const directory = mkdtempSync(join(tmpdir(), "webplayer-browser-"));
 
 // Exercise upgrading an existing Playlist table, not just a fresh installation.
@@ -29,10 +30,13 @@ export default defineConfig({
     launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH },
   },
   webServer: {
-    command: "pnpm dev --host 127.0.0.1 --port 5182 --strictPort",
+    command: production ? "node build" : "pnpm dev --host 127.0.0.1 --port 5182 --strictPort",
     url: baseURL,
     reuseExistingServer: false,
     env: {
+      NODE_ENV: production ? "production" : "development",
+      HOST: "127.0.0.1",
+      PORT: "5182",
       DATABASE_URL: join(directory, "browser.sqlite"),
       BETTER_AUTH_SECRET: "isolated-browser-test-secret-not-for-production",
       BETTER_AUTH_URL: baseURL,

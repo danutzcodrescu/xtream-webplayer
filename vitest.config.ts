@@ -5,7 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
-      "$env/dynamic/private": fileURLToPath(new URL("./src/test/env.ts", import.meta.url)),
+      "$app/env/private": fileURLToPath(new URL("./src/test/env.ts", import.meta.url)),
     },
   },
   test: {

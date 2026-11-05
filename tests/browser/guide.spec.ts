@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { test, expect } from "@playwright/test";
 
-test("search selection remounts and scrolls the guide; CDN settings validate and persist", async ({
+test("setup and login work; guide search scrolls; CDN settings validate and persist", async ({
   page,
 }) => {
   const channels = ["news", "sport"].flatMap((category, cat) =>
@@ -67,24 +67,25 @@ test("search selection remounts and scrolls the guide; CDN settings validate and
   try {
     const setup = await page.request.get("/setup", { maxRedirects: 0 });
     if (setup.status() === 200) {
-      const signedUp = await page.request.post("/api/auth/sign-up/email", {
+      // On a cold dev server, wait for client modules before submitting the SSR form.
+      await page.goto("/setup", { waitUntil: "networkidle" });
+      await page.getByLabel("Display Name", { exact: true }).fill("Browser Test");
+      await page.getByLabel("Username", { exact: true }).fill("browser_fixture");
+      await page.getByLabel("Password", { exact: true }).fill("test-only-password");
+      await page.getByLabel("Confirm Password", { exact: true }).fill("test-only-password");
+      await page.getByRole("button", { name: "Create Admin Account", exact: true }).click();
+      await expect(page).toHaveURL(/\/watch$/);
+      const signedOut = await page.request.post("/api/auth/sign-out", {
         headers: { Origin: "http://127.0.0.1:5182" },
-        data: {
-          name: "Browser Test",
-          username: "browser_fixture",
-          email: "browser@iptv.local",
-          password: "test-only-password",
-        },
+        data: {},
       });
-      expect(signedUp.ok()).toBe(true);
-      expect((await page.request.post("/api/setup/promote", { data: {} })).ok()).toBe(true);
-    } else {
-      const signedIn = await page.request.post("/api/auth/sign-in/username", {
-        headers: { Origin: "http://127.0.0.1:5182" },
-        data: { username: "browser_fixture", password: "test-only-password" },
-      });
-      expect(signedIn.ok()).toBe(true);
+      expect(signedOut.ok()).toBe(true);
     }
+    await page.goto("/login", { waitUntil: "networkidle" });
+    await page.getByLabel("Username", { exact: true }).fill("browser_fixture");
+    await page.getByLabel("Password", { exact: true }).fill("test-only-password");
+    await page.getByRole("button", { name: "Sign In", exact: true }).click();
+    await expect(page).toHaveURL(/\/watch$/);
     const created = await page.request.post("/api/playlists", {
       data: {
         name: "Fixture Playlist",

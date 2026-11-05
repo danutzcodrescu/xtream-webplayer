@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import pino from "pino";
 
 const isProd = process.env.NODE_ENV === "production";
@@ -19,7 +20,7 @@ export const logger = pino({
     ? {}
     : {
         transport: {
-          target: "pino-pretty",
+          target: createRequire(import.meta.url).resolve("pino-pretty"),
           options: {
             colorize: true,
             ignore: "pid,hostname",

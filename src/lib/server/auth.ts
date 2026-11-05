@@ -2,7 +2,7 @@ import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { admin, username } from "better-auth/plugins";
-import { env } from "$env/dynamic/private";
+import * as env from "$app/env/private";
 import { db } from "./db/index.js";
 import * as schema from "./db/schema.js";
 import { count } from "drizzle-orm";

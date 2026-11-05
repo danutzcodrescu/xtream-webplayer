@@ -18,7 +18,7 @@ This project was built with AI assistance and serves as a learning opportunity a
 
 | Layer        | Technology                                                                  |
 | ------------ | --------------------------------------------------------------------------- |
-| Framework    | [SvelteKit](https://kit.svelte.dev/) 2 + Svelte 5 (runes)                   |
+| Framework    | [SvelteKit](https://kit.svelte.dev/) 3 + Svelte 5 (runes)                   |
 | Adapter      | `@sveltejs/adapter-node`                                                    |
 | Database     | SQLite via Node.js `node:sqlite` + [Drizzle ORM](https://orm.drizzle.team/) |
 | Auth         | [Better Auth](https://better-auth.com/)                                     |
@@ -173,6 +173,8 @@ pnpm test:watch    # watch mode
 pnpm lint
 pnpm exec playwright install chromium  # one-time browser setup
 pnpm test:browser                     # guide scrolling + CDN settings
+# After pnpm build, run the same smoke test against the production server:
+PLAYWRIGHT_TEST_PRODUCTION=1 pnpm test:browser
 ```
 
 Tests exercise owned Playlist data, the HLS proxy request interface, and Playlist-scoped guide state. Provider responses are fixtures; no real provider credentials or existing database are used.
