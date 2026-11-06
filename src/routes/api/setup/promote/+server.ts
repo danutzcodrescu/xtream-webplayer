@@ -1,4 +1,4 @@
-import { json, error } from "@sveltejs/kit";
+import { error } from "@sveltejs/kit";
 import { db } from "$lib/server/db";
 import { user } from "$lib/server/db/schema";
 import { count, eq } from "drizzle-orm";
@@ -30,5 +30,5 @@ export const POST: RequestHandler = async ({ locals }) => {
   }
 
   log.info({ userId }, "user promoted to admin");
-  return json({ ok: true });
+  return Response.json({ ok: true });
 };

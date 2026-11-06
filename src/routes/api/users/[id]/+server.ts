@@ -1,4 +1,4 @@
-import { json, error } from "@sveltejs/kit";
+import { error } from "@sveltejs/kit";
 import { db } from "$lib/server/db";
 import { user } from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
@@ -47,7 +47,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
   if (!updated) error(404);
   log.info({ targetUserId: params.id, changes: body, by: locals.user?.id }, "user updated");
-  return json(updated);
+  return Response.json(updated);
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {

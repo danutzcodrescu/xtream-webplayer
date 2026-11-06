@@ -1,15 +1,15 @@
-import { json, error } from "@sveltejs/kit";
+import { error } from "@sveltejs/kit";
 import { playlistData } from "$lib/server/playlist";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.user) error(401);
-  return json(await playlistData.get(locals.user.id, params.id));
+  return Response.json(await playlistData.get(locals.user.id, params.id));
 };
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
   if (!locals.user) error(401);
-  return json(await playlistData.update(locals.user.id, params.id, await request.json()));
+  return Response.json(await playlistData.update(locals.user.id, params.id, await request.json()));
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {

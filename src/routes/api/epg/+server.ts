@@ -1,4 +1,4 @@
-import { json, error } from "@sveltejs/kit";
+import { error, isHttpError } from "@sveltejs/kit";
 import { playlistData } from "$lib/server/playlist";
 import type { RequestHandler } from "./$types";
 
@@ -14,5 +14,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
   ) {
     error(400, "Valid playlistId and streamId required");
   }
-  return json(await playlistData.epg(locals.user.id, id, streamId));
+  try {
+    return Response.json(await playlistData.epg(locals.user.id, id, streamId));
+  } catch (cause) {
+    if (isHttpError(cause)) throw cause;
+    error(503, "EPG temporarily unavailable. Please retry.");
+  }
 };

@@ -1,4 +1,4 @@
-import { json, error } from "@sveltejs/kit";
+import { error } from "@sveltejs/kit";
 import { auth } from "$lib/server/auth";
 import { db } from "$lib/server/db";
 import { user } from "$lib/server/db/schema";
@@ -27,7 +27,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     })
     .from(user);
 
-  return json(users);
+  return Response.json(users);
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -63,5 +63,5 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   });
 
   log.info({ username: body.username, role, createdBy: locals.user?.id }, "user created");
-  return json(res, { status: 201 });
+  return Response.json(res, { status: 201 });
 };
