@@ -1,9 +1,15 @@
 import { createServer } from "node:http";
 import { test, expect } from "@playwright/test";
 
-test("setup and login work; guide search scrolls; CDN settings validate and persist", async ({
+test("setup and login work; search plays through EPG outages; CDN settings persist", async ({
   page,
 }) => {
+  let epgUnavailable = false;
+  // 87 silent AAC-LC frames (1024 samples each at 44.1 kHz), about two seconds.
+  // Keep playback fixtures local and deterministic, without an ffmpeg dependency.
+  const audio = Buffer.concat(
+    Array.from({ length: 87 }, () => Buffer.from("//FQQAF//AEYIAc=", "base64")),
+  );
   const channels = ["news", "sport"].flatMap((category, cat) =>
     Array.from({ length: 40 }, (_, index) => ({
       stream_id: cat * 100 + index + 1,
@@ -15,7 +21,30 @@ test("setup and login work; guide search scrolls; CDN settings validate and pers
   );
   const provider = createServer((request, response) => {
     const url = new URL(request.url!, "http://fixture.test");
+    if (url.pathname.startsWith("/live/")) {
+      if (url.pathname.endsWith(".aac")) {
+        response.setHeader("Content-Type", "audio/aac");
+        response.end(audio);
+      } else {
+        response.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        response.end(
+          "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+            "#EXT-X-PLAYLIST-TYPE:VOD\n" +
+            "#EXTINF:2.020136,\nsilence.aac\n".repeat(20) +
+            "#EXT-X-ENDLIST\n",
+        );
+      }
+      return;
+    }
     response.setHeader("Content-Type", "application/json");
+    if (
+      epgUnavailable &&
+      ["get_simple_data_table", "get_short_epg"].includes(url.searchParams.get("action") ?? "")
+    ) {
+      response.writeHead(503);
+      response.end(JSON.stringify({ message: "EPG offline" }));
+      return;
+    }
     switch (url.searchParams.get("action")) {
       case "get_live_categories":
         response.end(
@@ -54,7 +83,6 @@ test("setup and login work; guide search scrolls; CDN settings validate and pers
         break;
       }
       default:
-        if (url.pathname.startsWith("/live/")) response.writeHead(404);
         response.end(JSON.stringify({ user_info: { auth: 1 } }));
     }
   });
@@ -114,6 +142,30 @@ test("setup and login work; guide search scrolls; CDN settings validate and pers
     expect(
       selected && viewport && selected.y >= viewport.y && selected.y < viewport.y + viewport.height,
     ).toBeTruthy();
+
+    await expect
+      .poll(() => page.locator("video").evaluate((video: HTMLVideoElement) => video.currentTime))
+      .toBeGreaterThan(0.2);
+
+    // Invalidate provider data so the next page load exercises a real upstream outage.
+    epgUnavailable = true;
+    const updated = await page.request.put(`/api/playlists/${playlistId}`, {
+      data: { name: "Fixture Playlist" },
+    });
+    expect(updated.ok()).toBe(true);
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "EPG unavailable — retry" }).first(),
+    ).toBeVisible();
+    await page.getByPlaceholder("Search channels…").fill("Target Sport");
+    const streamResponse = page.waitForResponse(
+      (response) => response.url().includes("/api/stream?") && response.status() === 200,
+    );
+    await page.getByRole("button").filter({ hasText: "Target Sport" }).click();
+    await streamResponse;
+    await expect
+      .poll(() => page.locator("video").evaluate((video: HTMLVideoElement) => video.currentTime))
+      .toBeGreaterThan(0.2);
 
     await page.goto("/settings");
     await page.getByLabel("Allowed CDN hosts", { exact: true }).fill("*.invalid.test");

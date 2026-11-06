@@ -1,5 +1,7 @@
-# ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM node:alpine AS builder
+# ── Stage 1: build on the builder's native CPU, not under QEMU ────────────────
+# SvelteKit emits portable JavaScript; native Vite/Rolldown tooling must run
+# on BUILDPLATFORM to avoid ARM64 illegal-instruction crashes under emulation.
+FROM --platform=$BUILDPLATFORM node:alpine AS builder
 
 WORKDIR /app
 
@@ -13,10 +15,16 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
-# Remove dev dependencies from node_modules
-RUN pnpm prune --prod
+# ── Stage 2: install runtime dependencies for the target CPU ──────────────────
+FROM node:alpine AS production-deps
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+WORKDIR /app
+
+RUN npm install --global pnpm@latest
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --prod --frozen-lockfile
+
+# ── Stage 3: runtime ──────────────────────────────────────────────────────────
 FROM node:alpine
 
 WORKDIR /app
@@ -27,8 +35,8 @@ RUN apk add --no-cache su-exec
 # Run as non-root for least-privilege
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Copy pruned node_modules (native .node files already compiled for alpine)
-COPY --from=builder /app/node_modules ./node_modules
+# Never copy native build-time dependencies across CPU architectures.
+COPY --from=production-deps /app/node_modules ./node_modules
 # Copy adapter-node server bundle
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/drizzle ./drizzle
