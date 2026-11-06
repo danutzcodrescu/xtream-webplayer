@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
 	import { authClient } from '$lib/auth-client';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import {
 		Tv,
 		ArrowLeft,
@@ -18,6 +18,8 @@
 	} from 'lucide-svelte';
 
 	let { data } = $props();
+	let hydrated = $state(false);
+	onMount(() => { hydrated = true; });
 
 	// ── Playlist management ────────────────────────────────────────────────
 	let showAddForm = $state(false);
@@ -193,8 +195,9 @@
 				<h2 class="text-base font-semibold text-white">Playlists</h2>
 				<button
 					onclick={() => (showAddForm = !showAddForm)}
+					disabled={!hydrated}
 					class="flex items-center gap-1.5 text-sm bg-indigo-600 hover:bg-indigo-500
-					       text-white px-3 py-1.5 rounded-lg transition"
+					       text-white px-3 py-1.5 rounded-lg transition disabled:opacity-50"
 				>
 					<Plus class="w-4 h-4" />
 					Add Playlist

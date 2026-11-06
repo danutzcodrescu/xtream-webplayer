@@ -230,3 +230,42 @@ test("setup and login work; playback survives EPG outages and cross-host redirec
     }
   }
 });
+
+test("settings waits for hydration before accepting Add Playlist", async ({ page, baseURL }) => {
+  const setup = await page.request.get("/setup", { maxRedirects: 0 });
+  const initial = setup.status() === 200;
+  const auth = await page.request.post(
+    `/api/auth/${initial ? "sign-up/email" : "sign-in/username"}`,
+    {
+      headers: { Origin: baseURL! },
+      data: {
+        username: "browser_fixture",
+        password: "test-only-password",
+        ...(initial && { name: "Browser Test", email: "browser_fixture@iptv.local" }),
+      },
+    },
+  );
+  expect(auth.status()).toBe(200);
+
+  // Hold client scripts to deterministically expose the SSR/hydration window.
+  let releaseScripts!: () => void;
+  const scripts = new Promise<void>((resolve) => {
+    releaseScripts = resolve;
+  });
+  await page.route("**/*", async (route) => {
+    if (route.request().resourceType() === "script") await scripts;
+    await route.continue();
+  });
+  try {
+    await page.goto("/settings", { waitUntil: "commit" });
+    const addPlaylist = page.getByRole("button", { name: "Add Playlist", exact: true });
+    await expect(addPlaylist).toBeVisible();
+    await expect(addPlaylist).toBeDisabled();
+    releaseScripts();
+    await addPlaylist.click(); // Auto-waits for hydration, not an arbitrary sleep.
+    await expect(page.getByLabel("Server URL", { exact: true })).toBeVisible();
+  } finally {
+    releaseScripts();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
