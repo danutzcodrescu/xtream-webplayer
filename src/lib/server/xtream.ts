@@ -66,6 +66,12 @@ export interface XtreamAuthResponse {
 }
 
 import { logger } from "./logger.js";
+import {
+  providerScheduler,
+  ProviderScheduler,
+  retryAfterMs,
+  XtreamApiError,
+} from "./provider-scheduler.js";
 
 const log = logger.child({ module: "xtream" });
 
@@ -74,11 +80,21 @@ const TIMEOUT_MS = 30_000;
 export class XtreamApi {
   private base: string;
 
-  constructor(private creds: XtreamCredentials) {
+  constructor(
+    private creds: XtreamCredentials,
+    private scheduler: ProviderScheduler = providerScheduler,
+  ) {
     this.base = creds.serverUrl.replace(/\/$/, "");
   }
 
   private async call<T>(action?: string, params: Record<string, string> = {}): Promise<T> {
+    const background = action === "get_simple_data_table" || action === "get_short_epg";
+    return this.scheduler.run(new URL(this.base).origin, background, () =>
+      this.fetch<T>(action, params),
+    );
+  }
+
+  private async fetch<T>(action?: string, params: Record<string, string> = {}): Promise<T> {
     const qs = new URLSearchParams({
       username: this.creds.username,
       password: this.creds.password,
@@ -97,7 +113,7 @@ export class XtreamApi {
         { action: operation, server: this.base, status: res.status, ms: Date.now() - t0 },
         "xtream api call failed",
       );
-      throw new Error(`Xtream API ${operation} failed: ${res.status}`);
+      throw new XtreamApiError(operation, res.status, retryAfterMs(res.headers.get("Retry-After")));
     }
     log.debug({ action: operation, ms: Date.now() - t0 }, "xtream api call ok");
     return res.json() as Promise<T>;

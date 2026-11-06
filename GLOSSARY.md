@@ -25,6 +25,3 @@ The browsable view of Channels and their Programmes.
 
 **Catchup**:
 Replay of a past Programme when the provider makes its recording available.
-
-**Allowed CDN host**:
-An additional host explicitly trusted by a Playlist's owner to supply its streaming content.

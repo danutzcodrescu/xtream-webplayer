@@ -1,7 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
-import { GuideData, type GuideTransport, type Channel, type EpgEntry } from "./guide-data.js";
+import {
+  GuideData,
+  GuideRequestError,
+  type GuideTransport,
+  type Channel,
+  type EpgEntry,
+} from "./guide-data.js";
 import { categories, channel, programme, deferred } from "../test/fixtures.js";
+
+const guides: GuideData[] = [];
+afterEach(() => {
+  for (const guide of guides.splice(0)) guide.dispose();
+  vi.useRealTimers();
+});
 
 function setup() {
   const transport = {
@@ -11,10 +23,113 @@ function setup() {
     channels: vi.fn<GuideTransport["channels"]>(async () => [channel]),
     epg: vi.fn<GuideTransport["epg"]>(async () => [programme]),
   };
-  return { transport, guide: new GuideData(transport) };
+  const guide = new GuideData(transport);
+  guides.push(guide);
+  return { transport, guide };
 }
 
 describe("Playlist-scoped guide state", () => {
+  it("avoids simulated 429s when loading a burst of twenty Channels", async () => {
+    const { guide, transport } = setup();
+    await guide.setPlaylist("list");
+    let active = 0;
+    let peak = 0;
+    transport.epg.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        if (active > 6) throw new Error("Xtream API get_short_epg failed: 429");
+        await Promise.resolve();
+        return [programme];
+      } finally {
+        active--;
+      }
+    });
+    await Promise.all(Array.from({ length: 20 }, (_, id) => guide.loadEpg(id, 150_000)));
+    expect(get(guide).epgErrors).toEqual({});
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(transport.epg).toHaveBeenCalledTimes(20);
+  });
+
+  it("honors shared cooldown even for manual retry and automatically resumes visible rows", async () => {
+    vi.useFakeTimers();
+    const { guide, transport } = setup();
+    await guide.setPlaylist("list");
+    transport.epg.mockRejectedValueOnce(new GuideRequestError(60_000));
+    guide.setVisibleChannels([1, 2, 3, 4], Date.now());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(transport.epg).toHaveBeenCalledTimes(2);
+    expect(get(guide).providerRetryAt).toBe(Date.now() + 60_000);
+    await guide.loadEpg(1, Date.now(), true);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(transport.epg).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(get(guide).providerRetryAt).toBe(0);
+    expect(Object.keys(get(guide).epg)).toHaveLength(4);
+    expect(transport.epg).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps stale listings visible on failure without extending their maximum lifetime", async () => {
+    vi.useFakeTimers();
+    const { guide, transport } = setup();
+    await guide.setPlaylist("list");
+    const expiresAt = Date.now() + 60_000;
+    transport.epg.mockResolvedValueOnce({
+      entries: [programme],
+      stale: true,
+      retryAfterMs: 30_000,
+      expiresAt,
+    });
+    await guide.loadEpg(7, Date.now());
+    expect(get(guide).epgStale[7]).toBe(true);
+    await vi.advanceTimersByTimeAsync(30_000);
+    transport.epg.mockRejectedValue(new Error("Offline"));
+    await guide.loadEpg(7, Date.now(), true);
+    expect(get(guide).epg[7]).toEqual([programme]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await guide.loadEpg(7, Date.now(), true);
+    expect(get(guide).epg[7]).toBeUndefined();
+  });
+
+  it("does not let an EPG-only outage block Channel navigation or search", async () => {
+    const { guide, transport } = setup();
+    await guide.setPlaylist("list");
+    transport.epg.mockRejectedValueOnce(new GuideRequestError(30_000, false));
+    await guide.loadEpg(7, Date.now());
+    expect(get(guide).providerRetryAt).toBe(0);
+    expect(await guide.selectCategory("sport")).toBe(true);
+    await guide.ensureAllChannels();
+    expect(get(guide).allChannels).toEqual([channel]);
+  });
+
+  it("drops queued EPG when switching Playlist or disposing", async () => {
+    const { guide, transport } = setup();
+    await guide.setPlaylist("first");
+    const blocked = deferred<EpgEntry[]>();
+    transport.epg.mockReturnValue(blocked.promise);
+    guide.setVisibleChannels([1, 2, 3], Date.now());
+    await guide.setPlaylist("second");
+    guide.dispose();
+    blocked.resolve([programme]);
+    await Promise.resolve();
+    expect(transport.epg).toHaveBeenCalledTimes(2);
+    expect(get(guide).epg).toEqual({});
+  });
+
+  it("bounds visible EPG concurrency and discards obsolete queued rows", async () => {
+    const { guide, transport } = setup();
+    await guide.setPlaylist("list");
+    const blocked = deferred<EpgEntry[]>();
+    transport.epg.mockReturnValue(blocked.promise);
+    guide.setVisibleChannels([1, 2, 3, 4], 150_000);
+    expect(transport.epg).toHaveBeenCalledTimes(2);
+    guide.setVisibleChannels([5, 6], 150_000);
+    blocked.resolve([programme]);
+    await vi.waitFor(() => expect(transport.epg).toHaveBeenCalledTimes(4));
+    expect(transport.epg.mock.calls.map((call) => call[1])).toEqual([1, 2, 5, 6]);
+    guide.dispose();
+  });
+
   it("ignores obsolete Category responses even if transport ignores cancellation", async () => {
     const { guide, transport } = setup();
     await guide.setPlaylist("first");

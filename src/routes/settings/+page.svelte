@@ -22,34 +22,6 @@
 	// ── Playlist management ────────────────────────────────────────────────
 	let showAddForm = $state(false);
 	let addForm = $state({ name: '', serverUrl: '', xtreamUsername: '', xtreamPassword: '' });
-	let addCdnHosts = $state('');
-	let cdnHosts = $state<Record<string, string>>({});
-	let cdnError = $state<Record<string, string>>({});
-	let cdnSaving = $state<string | null>(null);
-	let cdnReady = $state(false);
-	const splitHosts = (text: string) => text.split(/[\s,]+/).filter(Boolean);
-	$effect(() => {
-		cdnHosts = Object.fromEntries(data.playlists.map((item) => [item.id, item.allowedCdnHosts.join(', ')]));
-		cdnReady = true;
-	});
-
-	async function saveCdnHosts(id: string) {
-		cdnSaving = id;
-		cdnError[id] = '';
-		try {
-			const response = await fetch(`/api/playlists/${id}`, {
-				method: 'PUT', headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ allowedCdnHosts: splitHosts(cdnHosts[id] ?? '') })
-			});
-			if (!response.ok) {
-				const detail = await response.json().catch(() => ({}));
-				throw new Error(detail.message ?? 'Unable to save CDN hosts');
-			}
-			await invalidateAll();
-		} catch (error) {
-			cdnError[id] = error instanceof Error ? error.message : 'Unable to save CDN hosts';
-		} finally { cdnSaving = null; }
-	}
 	let addError = $state('');
 	let addLoading = $state(false);
 
@@ -61,7 +33,7 @@
 		const res = await fetch('/api/playlists', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ ...addForm, allowedCdnHosts: splitHosts(addCdnHosts) })
+			body: JSON.stringify(addForm)
 		});
 
 		if (!res.ok) {
@@ -73,7 +45,6 @@
 
 		const newPlaylist = await res.json();
 		addForm = { name: '', serverUrl: '', xtreamUsername: '', xtreamPassword: '' };
-		addCdnHosts = '';
 		showAddForm = false;
 		addLoading = false;
 		await invalidateAll();
@@ -298,12 +269,6 @@
 						</div>
 					</div>
 
-					<div>
-						<label for="pl-cdn" class="block text-xs text-gray-400 mb-1">Allowed CDN hosts (optional)</label>
-						<input id="pl-cdn" type="text" bind:value={addCdnHosts} placeholder="cdn.provider.example, media.provider.example"
-							class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white" />
-						<p class="mt-1 text-xs text-gray-500">Exact hostnames, separated by commas. No schemes, ports, paths, or wildcards.</p>
-					</div>
 					<div class="flex justify-end gap-2">
 						<button
 							type="button"
@@ -349,17 +314,6 @@
 								<Trash2 class="w-4 h-4" />
 							</button>
 							</div>
-							<form onsubmit={(event) => { event.preventDefault(); void saveCdnHosts(pl.id); }} class="mt-3">
-								<label for={`cdn-${pl.id}`} class="block text-xs text-gray-400 mb-1">Allowed CDN hosts</label>
-								<div class="flex gap-2">
-									<input id={`cdn-${pl.id}`} type="text" bind:value={cdnHosts[pl.id]} placeholder="None — Playlist host only"
-										disabled={!cdnReady || cdnSaving === pl.id}
-										class="min-w-0 flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-sm" />
-									<button type="submit" disabled={!cdnReady || cdnSaving !== null} class="px-3 py-1.5 rounded bg-indigo-600 text-sm disabled:opacity-50">{cdnSaving === pl.id ? 'Saving…' : 'Save hosts'}</button>
-								</div>
-								<p class="text-xs text-gray-500 mt-1">Only the Playlist host and these exact hosts may supply streams or redirects.</p>
-								{#if cdnError[pl.id]}<p role="alert" class="text-xs text-red-300 mt-1">{cdnError[pl.id]}</p>{/if}
-							</form>
 						</li>
 					{/each}
 				</ul>

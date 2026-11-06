@@ -114,14 +114,26 @@ volumes:
 
 ## Environment variables
 
-| Variable             | Required | Default                                                   | Description                                                                             |
-| -------------------- | -------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET` | Yes      | —                                                         | Secret for auth token signing and AES encryption key derivation                         |
-| `DATABASE_URL`       | No       | `./data/db.sqlite`                                        | Path to the SQLite database file                                                        |
-| `ORIGIN`             | No       | `http://localhost:3000`                                   | Public URL used for SvelteKit and authentication origin checks (required in production) |
-| `BETTER_AUTH_URL`    | No       | `ORIGIN`, or `http://localhost:5173` in local development | Optional explicit authentication URL override                                           |
-| `LOG_LEVEL`          | No       | `debug` (dev) / `info` (prod)                             | Pino log level                                                                          |
-| `NODE_ENV`           | No       | —                                                         | Set to `production` to enable JSON logs and info-level default                          |
+| Variable                     | Required | Default                                                   | Description                                                                             |
+| ---------------------------- | -------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`         | Yes      | —                                                         | Secret for auth token signing and AES encryption key derivation                         |
+| `DATABASE_URL`               | No       | `./data/db.sqlite`                                        | Path to the SQLite database file                                                        |
+| `ORIGIN`                     | No       | `http://localhost:3000`                                   | Public URL used for SvelteKit and authentication origin checks (required in production) |
+| `BETTER_AUTH_URL`            | No       | `ORIGIN`, or `http://localhost:5173` in local development | Optional explicit authentication URL override                                           |
+| `LOG_LEVEL`                  | No       | `debug` (dev) / `info` (prod)                             | Pino log level                                                                          |
+| `NODE_ENV`                   | No       | —                                                         | Set to `production` to enable JSON logs and info-level default                          |
+| `XTREAM_API_CONCURRENCY`     | No       | `2`                                                       | Maximum simultaneous metadata requests per provider origin (1–10)                       |
+| `XTREAM_API_MIN_INTERVAL_MS` | No       | `500`                                                     | Minimum spacing between metadata request starts per provider origin (0–60000 ms)        |
+
+### Provider throttling and guide freshness
+
+Provider metadata requests share a budget across users and Playlists with the same server origin. Category/Channel reads and account checks take priority over queued EPG work. HLS playback uses a separate path and is not queued behind guide requests.
+
+A provider 429 starts a shared cooldown: `Retry-After` is honored, or exponential backoff starts at 30 seconds and caps at five minutes. A longer provider-supplied delay is not shortened. Queued requests fail with a sanitized 503 and `Retry-After`; manual retries cannot bypass the cooldown. Full EPG falls back to short EPG only for unsupported endpoints or empty listings, not for rate limits, network failures, or server outages.
+
+EPG is fresh for five minutes. Failed refreshes can serve previously fetched listings for up to six hours from the original fetch, marked as out of date. The guide loads at most two rows concurrently, discards not-yet-started work for rows that leave view, and automatically resumes visible rows after failures/cooldowns. Categories and Channels retain their six-hour cache.
+
+Scheduling, cooldowns, and caches are **process-local**. Run one Node process per provider budget; multiple replicas do not coordinate these limits. Restarting the app clears this state.
 
 ## First-time setup
 
@@ -172,7 +184,7 @@ pnpm test          # deterministic Vitest suite; isolated in-memory SQLite
 pnpm test:watch    # watch mode
 pnpm lint
 pnpm exec playwright install chromium  # one-time browser setup
-pnpm test:browser                     # guide scrolling + CDN settings
+pnpm test:browser                     # guide scrolling + cross-host playback
 # After pnpm build, run the same smoke test against the production server:
 PLAYWRIGHT_TEST_PRODUCTION=1 pnpm test:browser
 ```
@@ -181,13 +193,13 @@ Tests exercise owned Playlist data, the HLS proxy request interface, and Playlis
 
 Account regressions exercise real authentication/user handlers and the request guard, including closed registration, production origins, administrator-created username logins, and session revocation. Startup tests cover fresh and legacy databases and repeated migrations. Channel reads return only the browser-facing fields, excluding provider stream URLs and unknown transport metadata.
 
-The browser check starts its own app and provider fixture, upgrades an isolated legacy Playlist table, and checks search selection, row scrolling, and CDN host editing. Its database and artifacts live in the OS temp directory. To use an existing Chromium installation instead of downloading one, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable.
+The browser check starts its own app and provider fixture, upgrades an isolated legacy Playlist table, and checks search selection, row scrolling, and playback across provider/CDN hostnames. Its database and artifacts live in the OS temp directory. Generated SvelteKit files use a unique directory under `.svelte-kit/browser/` so the test server cannot overwrite a running local dev server's auth configuration. To use an existing Chromium installation instead of downloading one, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable.
 
-## CDN host settings
+## Stream redirects
 
-Streaming requests may use the Playlist server's hostname and any **Allowed CDN hosts** explicitly configured in **Settings → Playlists**. Enter exact hostnames separated by commas, without schemes, ports, paths, or wildcards. Every redirect and manifest URI is checked before fetching; adding a CDN does not give it the provider's cookies. Hostnames cover all HTTP/HTTPS ports for providers that change ports during playback.
+Provider redirects and HLS manifests may use other HTTP/HTTPS hosts without configuration. Cookies remain isolated by user, Playlist, and hostname, so a provider redirect does not forward its cookies to a CDN. Non-HTTP URLs and URLs containing embedded credentials are rejected.
 
-Existing Playlists start with no additional CDN hosts. Providers that redirect to another hostname require that hostname to be added before playback works. Changing these settings takes effect on subsequent token requests. Restart playback after upgrading: older proxy tokens do not include Playlist identity and are intentionally rejected.
+Only configure providers you trust: the proxy fetches provider-controlled redirects and manifest URLs from the server. Legacy CDN-host settings are ignored; their database column is retained for compatibility.
 
 Categories and Channels are cached for six hours; EPG for five minutes. Ownership is checked before every cached read. Failed requests are not cached as empty EPG. The guide ignores obsolete Playlist/Category responses, retains loaded EPG across Category changes, and offers retries after loading failures.
 
@@ -209,7 +221,7 @@ src/
 │       ├── logger.ts        # Pino root logger
 │       ├── playlist.ts      # Production Playlist module configuration
 │       ├── stream-proxy.ts  # Redirects, cookies, manifest rewriting, tokens
-│       ├── stream-policy.ts # Exact CDN host validation and stream URL policy
+│       ├── stream-policy.ts # HTTP/HTTPS stream URL validation
 │       └── xtream.ts        # Stream server API client
 └── routes/
     ├── api/
@@ -229,8 +241,8 @@ src/
 
 - Server credentials are encrypted at rest (AES-256-GCM) — the encryption key is derived from `BETTER_AUTH_SECRET`
 - The HLS proxy rewrites segment URLs into signed tokens so credentials never leave the server
-- Streaming requests, including every redirect, are restricted to the Playlist host and explicitly allowed CDN hosts
-- Proxy tokens are encrypted and bound to a user and Playlist; ownership and current host settings are checked again on every request
+- Stream redirects and manifest URLs may use any HTTP/HTTPS host; there is no hostname allowlist
+- Proxy tokens are encrypted and bound to a user and Playlist; ownership is checked again on every request
 - A strict Content Security Policy is applied to all responses
 
 ## License

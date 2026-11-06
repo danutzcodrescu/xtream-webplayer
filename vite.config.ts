@@ -7,6 +7,8 @@ export default defineConfig({
   plugins: [
     sveltekit({
       adapter: adapter(),
+      // Concurrent browser-test servers must not overwrite the local dev environment.
+      outDir: process.env.SVELTEKIT_OUT_DIR,
       preprocess: vitePreprocess(),
       alias: { $lib: "src/lib" },
     }),

@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineConfig } from "@playwright/test";
 
@@ -38,6 +38,8 @@ export default defineConfig({
       HOST: "127.0.0.1",
       PORT: "5182",
       DATABASE_URL: join(directory, "browser.sqlite"),
+      // Keep generated modules under the project so Node can resolve dependencies.
+      SVELTEKIT_OUT_DIR: join(process.cwd(), ".svelte-kit", "browser", basename(directory)),
       BETTER_AUTH_SECRET: "isolated-browser-test-secret-not-for-production",
       BETTER_AUTH_URL: baseURL,
       ORIGIN: baseURL,

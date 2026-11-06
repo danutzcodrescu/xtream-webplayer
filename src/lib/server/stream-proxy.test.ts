@@ -17,7 +17,6 @@ function setup() {
     serverUrl: "https://provider.test:8080",
     username: "secret-user",
     password: "secret-password",
-    allowedCdnHosts: [],
   };
   const resolve = vi.fn(async () => credentials);
   const fetch = vi.fn<typeof globalThis.fetch>();
@@ -54,28 +53,28 @@ describe("HLS proxy request interface", () => {
     ]);
   });
 
-  it("checks every redirect before fetching and permits only explicit CDN hosts", async () => {
-    const { proxy, fetch, credentials } = setup();
-    fetch.mockResolvedValueOnce(
-      new Response(null, { status: 302, headers: { Location: "https://cdn.test/live.m3u8" } }),
-    );
-    await expect(proxy.respond(initial(), "owner")).rejects.toMatchObject({ status: 403 });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    credentials.allowedCdnHosts = ["cdn.test"];
+  it("follows cross-host redirects and proxies CDN segments without host configuration", async () => {
+    const { proxy, fetch } = setup();
     fetch
       .mockResolvedValueOnce(
         new Response(null, { status: 302, headers: { Location: "https://cdn.test/live.m3u8" } }),
       )
-      .mockResolvedValueOnce(manifest("#EXTM3U\nseg.ts"));
+      .mockResolvedValueOnce(manifest("#EXTM3U\nhttps://media.test/seg.ts"));
     const response = await proxy.respond(initial(), "owner");
-    expect(uris(await response.text())).toHaveLength(1);
+    const links = uris(await response.text());
+    expect(links).toHaveLength(1);
     expect(fetch.mock.calls.at(-1)?.[0]).toBe("https://cdn.test/live.m3u8");
+    fetch.mockResolvedValueOnce(new Response("segment"));
+    expect(await (await proxy.respond(proxied(links[0]), "owner")).text()).toBe("segment");
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe("https://media.test/seg.ts");
     expect(fetch.mock.calls.every(([, init]) => init?.redirect === "manual")).toBe(true);
   });
 
-  it("rejects bad manifest destinations and non-HTTP redirect protocols", async () => {
+  it("rejects embedded credentials in manifest URLs and non-HTTP redirect protocols", async () => {
     const { proxy, fetch } = setup();
-    fetch.mockResolvedValueOnce(manifest('#EXTM3U\n#EXT-X-KEY:URI="https://other.test/key"'));
+    fetch.mockResolvedValueOnce(
+      manifest('#EXTM3U\n#EXT-X-KEY:URI="https://user:password@other.test/key"'),
+    );
     await expect(proxy.respond(initial(), "owner")).rejects.toMatchObject({ status: 403 });
     fetch.mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { Location: "file:///etc/passwd" } }),
@@ -84,9 +83,8 @@ describe("HLS proxy request interface", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("does not send provider cookies to a CDN or follow a CDN's unapproved redirect", async () => {
-    const { proxy, fetch, credentials } = setup();
-    credentials.allowedCdnHosts = ["cdn.test"];
+  it("follows chained CDN redirects without forwarding cookies across hosts", async () => {
+    const { proxy, fetch } = setup();
     fetch
       .mockResolvedValueOnce(
         new Response(null, {
@@ -100,22 +98,21 @@ describe("HLS proxy request interface", () => {
       .mockResolvedValueOnce(
         new Response(null, {
           status: 302,
-          headers: { Location: "https://unapproved.test/last.m3u8" },
+          headers: { Location: "https://another-cdn.test/last.m3u8" },
         }),
-      );
-    await expect(proxy.respond(initial(), "owner")).rejects.toMatchObject({ status: 403 });
-    expect(fetch).toHaveBeenCalledTimes(2);
+      )
+      .mockResolvedValueOnce(manifest("#EXTM3U\nseg.ts"));
+    expect((await proxy.respond(initial(), "owner")).status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(new Headers(fetch.mock.calls[1][1]?.headers).has("Cookie")).toBe(false);
+    expect(new Headers(fetch.mock.calls[2][1]?.headers).has("Cookie")).toBe(false);
   });
 
-  it("binds encrypted tokens to the user and rechecks current Playlist access and hosts", async () => {
-    const { proxy, fetch, resolve, credentials } = setup();
-    credentials.allowedCdnHosts = ["cdn.test"];
+  it("binds encrypted tokens to the user and rechecks current Playlist access", async () => {
+    const { proxy, fetch, resolve } = setup();
     fetch.mockResolvedValueOnce(manifest("#EXTM3U\nhttps://cdn.test/seg.ts"));
     const tokenUrl = proxied(uris(await (await proxy.respond(initial(), "owner")).text())[0]);
     await expect(proxy.respond(tokenUrl, "other")).rejects.toMatchObject({ status: 403 });
-    credentials.allowedCdnHosts = [];
-    await expect(proxy.respond(tokenUrl, "owner")).rejects.toMatchObject({ status: 403 });
     resolve.mockRejectedValueOnce({ status: 404 });
     await expect(proxy.respond(tokenUrl, "owner")).rejects.toMatchObject({ status: 404 });
     expect(fetch).toHaveBeenCalledTimes(1);

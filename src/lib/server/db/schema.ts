@@ -76,6 +76,7 @@ export const playlist = sqliteTable("playlist", {
   serverUrl: text("serverUrl").notNull(),
   xtreamUsername: text("xtreamUsername").notNull(),
   xtreamPassword: text("xtreamPassword").notNull(),
+  // Legacy column retained for database compatibility; no longer used by playback.
   allowedCdnHosts: text("allowedCdnHosts", { mode: "json" })
     .$type<string[]>()
     .notNull()

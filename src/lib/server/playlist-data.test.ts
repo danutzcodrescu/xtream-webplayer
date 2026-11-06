@@ -3,6 +3,7 @@ import { db } from "./db/index.js";
 import { playlist, user } from "./db/schema.js";
 import { encrypt } from "./crypto.js";
 import { PlaylistData } from "./playlist-data.js";
+import { XtreamApiError } from "./provider-scheduler.js";
 import type { XtreamStream } from "./xtream.js";
 import { authenticated, categories, channel, programme, deferred } from "../../test/fixtures.js";
 
@@ -49,6 +50,35 @@ beforeEach(async () => {
 });
 
 describe("owned Playlist data", () => {
+  it("does not amplify rate limits with a short EPG fallback", async () => {
+    const { data, provider } = setup();
+    provider.getSimpleDataTable.mockRejectedValue(
+      new XtreamApiError("get_simple_data_table", 429, 60_000),
+    );
+    await expect(data.epg("owner", "list", 7)).rejects.toMatchObject({ status: 429 });
+    expect(provider.getShortEpg).not.toHaveBeenCalled();
+  });
+
+  it("retains stale EPG on failed refresh, suppresses retries, and expires it after six hours", async () => {
+    const { data, provider, advance } = setup();
+    await data.epg("owner", "list", 7);
+    advance(300_000);
+    provider.getSimpleDataTable.mockRejectedValue(
+      new XtreamApiError("get_simple_data_table", 429, 60_000),
+    );
+    expect(await data.epgWithStatus("owner", "list", 7)).toMatchObject({
+      value: [programme],
+      stale: true,
+      retryAfterMs: 60_000,
+    });
+    await data.epg("owner", "list", 7);
+    expect(provider.getSimpleDataTable).toHaveBeenCalledTimes(2);
+    await expect(data.epg("other", "list", 7)).rejects.toMatchObject({ status: 404 });
+    advance(6 * 60 * 60 * 1000);
+    await expect(data.epg("owner", "list", 7)).rejects.toMatchObject({ status: 429 });
+    expect(provider.getShortEpg).not.toHaveBeenCalled();
+  });
+
   it("returns only browser-facing Channel fields, never credential-bearing provider URLs", async () => {
     const { data, provider } = setup();
     const upstream = {
@@ -106,7 +136,6 @@ describe("owned Playlist data", () => {
     await vi.waitFor(() => expect(provider.getLiveStreams).toHaveBeenCalledTimes(1));
     const safe = await data.update("owner", "list", {
       xtreamPassword: "replacement",
-      allowedCdnHosts: ["cdn.test"],
     });
     expect(safe).not.toHaveProperty("xtreamPassword");
     await data.channels("owner", "list");
@@ -130,7 +159,7 @@ describe("owned Playlist data", () => {
 
   it("falls back for EPG, decodes text, and retries rather than caching failure as emptiness", async () => {
     const { data, provider, advance } = setup();
-    provider.getSimpleDataTable.mockRejectedValue(new Error("Unsupported"));
+    provider.getSimpleDataTable.mockRejectedValue(new XtreamApiError("get_simple_data_table", 404));
     provider.getShortEpg.mockRejectedValueOnce(new Error("Offline")).mockResolvedValue({
       epg_listings: [
         {
@@ -152,28 +181,22 @@ describe("owned Playlist data", () => {
     expect(provider.getShortEpg).toHaveBeenCalledTimes(3);
   });
 
-  it("creates safe Playlist descriptions and validates CDN host settings", async () => {
+  it("creates safe Playlist descriptions without CDN host configuration", async () => {
     const { data } = setup();
     const created = await data.create("owner", {
       name: "Second",
       serverUrl: "https://provider.test/",
       xtreamUsername: "secret-user",
       xtreamPassword: "secret-password",
-      allowedCdnHosts: ["CDN.TEST", "cdn.test"],
     });
-    expect(created.allowedCdnHosts).toEqual(["cdn.test"]);
+    expect(created).not.toHaveProperty("allowedCdnHosts");
+    expect(await data.credentials("owner", created.id)).not.toHaveProperty("allowedCdnHosts");
     expect(JSON.stringify(await data.list("owner"))).not.toContain("secret-password");
-    await expect(
-      data.update("owner", "list", { allowedCdnHosts: ["*.test"] }),
-    ).rejects.toMatchObject({ status: 400 });
-    await expect(
-      data.update("owner", "list", { allowedCdnHosts: ["https://cdn.test/path"] }),
-    ).rejects.toMatchObject({ status: 400 });
     await expect(
       data.update("owner", "list", { serverUrl: "file:///etc/passwd" }),
     ).rejects.toMatchObject({ status: 400 });
-    await expect(
-      data.update("other", "list", { allowedCdnHosts: ["evil.test"] }),
-    ).rejects.toMatchObject({ status: 404 });
+    await expect(data.update("other", "list", { name: "Not owned" })).rejects.toMatchObject({
+      status: 404,
+    });
   });
 });

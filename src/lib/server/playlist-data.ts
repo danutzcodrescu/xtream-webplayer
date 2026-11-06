@@ -3,15 +3,12 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import type { db as database } from "./db/index.js";
 import { categoryOrder, playlist, type Playlist } from "./db/schema.js";
 import type { XtreamApi, XtreamCredentials, XtreamEpgEntry } from "./xtream.js";
-import { parseAllowedCdnHosts } from "./stream-policy.js";
 import { logger } from "./logger.js";
 import { encrypt, decrypt } from "./crypto.js";
 import type { Channel } from "../guide-data.js";
+import { XtreamApiError } from "./provider-scheduler.js";
 
-export type PlaylistCredentials = XtreamCredentials & {
-  id: string;
-  allowedCdnHosts: string[];
-};
+export type PlaylistCredentials = XtreamCredentials & { id: string };
 
 type Provider = Pick<
   XtreamApi,
@@ -19,15 +16,28 @@ type Provider = Pick<
 >;
 const TTL_MS = 6 * 60 * 60 * 1000;
 const log = logger.child({ module: "playlists" });
+type CachedResult<T> = {
+  value: T;
+  stale: boolean;
+  retryAfterMs?: number;
+  expiresAt?: number;
+  cooldown?: boolean;
+};
+type CacheEntry = {
+  at: number;
+  value: Promise<CachedResult<unknown>>;
+  retryAt?: number;
+  cooldown?: boolean;
+};
 
 /** Owns Playlist access, provider data lifetime, and mutation-driven invalidation. */
 export class PlaylistData {
-  private caches = new Map<string, Map<string, { at: number; value: Promise<unknown> }>>();
+  private caches = new Map<string, Map<string, CacheEntry>>();
 
   constructor(
     private db: typeof database,
     private provider: (credentials: XtreamCredentials) => Provider,
-    private now: () => number = Date.now,
+    private now: () => number = () => Date.now(),
   ) {}
 
   private async owned(userId: string, id: string): Promise<Playlist> {
@@ -44,7 +54,6 @@ export class PlaylistData {
       id: row.id,
       name: row.name,
       serverUrl: decrypt(row.serverUrl),
-      allowedCdnHosts: row.allowedCdnHosts,
       createdAt: row.createdAt,
     };
   }
@@ -55,7 +64,6 @@ export class PlaylistData {
       serverUrl: decrypt(row.serverUrl),
       username: decrypt(row.xtreamUsername),
       password: decrypt(row.xtreamPassword),
-      allowedCdnHosts: row.allowedCdnHosts,
     };
   }
 
@@ -64,22 +72,58 @@ export class PlaylistData {
   }
 
   private async cached<T>(row: Playlist, key: string, load: () => Promise<T>): Promise<T> {
+    return (await this.cachedResult(row, key, load)).value;
+  }
+
+  private async cachedResult<T>(
+    row: Playlist,
+    key: string,
+    load: () => Promise<T>,
+    staleMs = 0,
+  ): Promise<CachedResult<T>> {
     let bucket = this.caches.get(row.id);
     if (!bucket) this.caches.set(row.id, (bucket = new Map()));
     const previous = bucket.get(key);
+    if (previous?.retryAt && previous.retryAt > this.now() && this.now() - previous.at < staleMs)
+      return {
+        ...((await previous.value) as CachedResult<T>),
+        stale: true,
+        retryAfterMs: previous.retryAt - this.now(),
+        cooldown: previous.cooldown,
+      };
     if (previous && this.now() - previous.at < (key.startsWith("epg:") ? 300_000 : TTL_MS)) {
       log.debug({ playlistId: row.id, resource: key }, "Playlist data cache hit");
-      return previous.value as Promise<T>;
+      return previous.value as Promise<CachedResult<T>>;
     }
     log.debug({ playlistId: row.id, resource: key }, "loading Playlist data");
-    const entry = { at: this.now(), value: Promise.resolve().then(load) };
+    const entry: CacheEntry = {
+      at: this.now(),
+      value: Promise.resolve()
+        .then(load)
+        .then((value) => ({
+          value,
+          stale: false,
+          ...(staleMs && { expiresAt: entry.at + staleMs }),
+        }))
+        .catch(async (cause) => {
+          if (bucket.get(key) === entry) bucket.delete(key);
+          if (previous && this.now() - previous.at < staleMs) {
+            const result = (await previous.value) as CachedResult<T>;
+            const retryAfterMs = Math.max(
+              30_000,
+              cause instanceof XtreamApiError ? cause.retryAfterMs : 0,
+            );
+            previous.retryAt = this.now() + retryAfterMs;
+            previous.cooldown = cause instanceof XtreamApiError && cause.status === 429;
+            // A mutation may have detached this bucket; never restore into the new one.
+            if (!bucket.has(key)) bucket.set(key, previous);
+            return { ...result, stale: true, retryAfterMs, cooldown: previous.cooldown };
+          }
+          throw cause;
+        }),
+    };
     bucket.set(key, entry);
-    try {
-      return await entry.value;
-    } catch (cause) {
-      if (bucket.get(key) === entry) bucket.delete(key);
-      throw cause;
-    }
+    return entry.value as Promise<CachedResult<T>>;
   }
 
   async list(userId: string) {
@@ -104,7 +148,6 @@ export class PlaylistData {
       error(400, "Name, server URL, and credentials are required");
     }
     const server = this.serverUrl(serverUrl);
-    const allowedCdnHosts = parseAllowedCdnHosts(body.allowedCdnHosts ?? []);
     const credentials = {
       serverUrl: server,
       username: String(xtreamUsername),
@@ -122,7 +165,6 @@ export class PlaylistData {
         serverUrl: encrypt(server),
         xtreamUsername: encrypt(credentials.username),
         xtreamPassword: encrypt(credentials.password),
-        allowedCdnHosts,
       })
       .returning();
     log.info({ userId, playlistId: row.id }, "Playlist created");
@@ -158,7 +200,7 @@ export class PlaylistData {
       !body ||
       typeof body !== "object" ||
       Array.isArray(body) ||
-      !["name", "serverUrl", "xtreamUsername", "xtreamPassword", "allowedCdnHosts"].some(
+      !["name", "serverUrl", "xtreamUsername", "xtreamPassword"].some(
         (field) => body[field] !== undefined,
       )
     ) {
@@ -181,9 +223,6 @@ export class PlaylistData {
         }),
         ...(typeof body.xtreamPassword === "string" && {
           xtreamPassword: encrypt(body.xtreamPassword),
-        }),
-        ...(body.allowedCdnHosts !== undefined && {
-          allowedCdnHosts: parseAllowedCdnHosts(body.allowedCdnHosts),
         }),
       })
       .where(and(eq(playlist.id, id), eq(playlist.userId, userId)))
@@ -258,38 +297,48 @@ export class PlaylistData {
     const row = await this.owned(userId, id);
     return this.cached(row, JSON.stringify(["channels", categoryId ?? ""]), async () => {
       const streams = await this.provider(this.credentialsFor(row)).getLiveStreams(categoryId);
-      return streams.map(
-        (stream): Channel => ({
-          stream_id: stream.stream_id,
-          name: stream.name,
-          stream_icon: stream.stream_icon,
-          category_id: stream.category_id,
-          epg_channel_id: stream.epg_channel_id,
-          tv_archive: stream.tv_archive,
-          tv_archive_duration: stream.tv_archive_duration,
-        }),
-      );
+      return streams.map((stream): Channel => ({
+        stream_id: stream.stream_id,
+        name: stream.name,
+        stream_icon: stream.stream_icon,
+        category_id: stream.category_id,
+        epg_channel_id: stream.epg_channel_id,
+        tv_archive: stream.tv_archive,
+        tv_archive_duration: stream.tv_archive_duration,
+      }));
     });
   }
 
   async epg(userId: string, id: string, streamId: number) {
+    return (await this.epgWithStatus(userId, id, streamId)).value;
+  }
+
+  async epgWithStatus(userId: string, id: string, streamId: number) {
     const row = await this.owned(userId, id);
-    return this.cached(row, `epg:${streamId}`, async () => {
-      const provider = this.provider(this.credentialsFor(row));
-      let listings: XtreamEpgEntry[] = [];
-      try {
-        listings = (await provider.getSimpleDataTable(streamId)).epg_listings ?? [];
-      } catch {
-        /* Try short EPG. */
-      }
-      if (!listings.length)
-        listings = (await provider.getShortEpg(streamId, 20)).epg_listings ?? [];
-      return listings.map((entry) => ({
-        ...entry,
-        title: decodeText(entry.title),
-        description: decodeText(entry.description),
-      }));
-    });
+    return this.cachedResult(
+      row,
+      `epg:${streamId}`,
+      async () => {
+        const provider = this.provider(this.credentialsFor(row));
+        let listings: XtreamEpgEntry[] = [];
+        try {
+          listings = (await provider.getSimpleDataTable(streamId)).epg_listings ?? [];
+        } catch (cause) {
+          // Unsupported full-guide endpoints can fall back; overload/auth/network errors cannot.
+          if (!(cause instanceof XtreamApiError) || ![400, 404, 405, 501].includes(cause.status))
+            throw cause;
+          /* Try short EPG. */
+        }
+        if (!listings.length)
+          listings = (await provider.getShortEpg(streamId, 20)).epg_listings ?? [];
+        return listings.map((entry) => ({
+          ...entry,
+          title: decodeText(entry.title),
+          description: decodeText(entry.description),
+        }));
+      },
+      TTL_MS,
+    );
   }
 }
 

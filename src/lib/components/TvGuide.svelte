@@ -99,7 +99,7 @@
 
 	// Load EPG for newly visible channels
 	$effect(() => {
-		for (const ch of visibleChs) void guide.loadEpg(ch.stream_id, nowMs);
+		guide.setVisibleChannels(searchQuery.trim() ? [] : visibleChs.map((ch) => ch.stream_id), nowMs);
 	});
 
 	// ── Helpers ────────────────────────────────────────────────────────────────
@@ -245,6 +245,9 @@
 		<div role="alert" class="px-3 py-2 text-sm text-red-300">
 			{$guide.error} <button class="underline" onclick={() => guide.retry()}>Retry</button>
 		</div>
+	{/if}
+	{#if $guide.providerRetryAt}
+		<p role="status" class="px-3 py-2 text-sm text-amber-300">Provider busy or unavailable — retrying shortly. Previously loaded guide data may be out of date.</p>
 	{/if}
 
 	<!-- ── Search results (virtualized) ────────────────────────────────────── -->
@@ -399,8 +402,11 @@
 								</div>
 							{/if}
 						</div>
-						<span class="text-sm font-medium truncate leading-tight text-gray-200">
-							{ch.name}
+						<span class="min-w-0 flex flex-col">
+							<span class="text-sm font-medium truncate leading-tight text-gray-200">{ch.name}</span>
+							{#if $guide.epgStale[ch.stream_id] && programmes}
+								<span class="text-xs text-amber-300">Out-of-date guide</span>
+							{/if}
 						</span>
 					</button>
 
@@ -412,7 +418,7 @@
 							style="left:{nowPx}px"
 						></div>
 
-						{#if $guide.epgErrors[ch.stream_id]}
+						{#if $guide.epgErrors[ch.stream_id] && programmes === undefined}
 							<button class="absolute inset-0 px-4 text-left text-xs text-red-300" onclick={() => guide.loadEpg(ch.stream_id, nowMs, true)}>EPG unavailable — retry</button>
 						{:else if programmes === undefined}
 							<!-- Skeleton while loading EPG -->

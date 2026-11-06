@@ -1,12 +1,17 @@
 import { error } from "@sveltejs/kit";
 import { playlistData } from "$lib/server/playlist";
+import { providerUnavailable } from "$lib/server/provider-response";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
   if (!locals.user) error(401);
   const id = url.searchParams.get("playlistId");
   if (!id) error(400, "playlistId required");
-  return Response.json(await playlistData.categories(locals.user.id, id));
+  try {
+    return Response.json(await playlistData.categories(locals.user.id, id));
+  } catch (cause) {
+    return providerUnavailable(cause, "Categories temporarily unavailable. Please retry.");
+  }
 };
 
 export const PUT: RequestHandler = async ({ request, locals }) => {

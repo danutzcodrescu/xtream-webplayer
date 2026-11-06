@@ -63,7 +63,7 @@ export class StreamProxy {
       return this.proxy(target, userId, credentials);
     }
 
-    // Re-read ownership and the current host policy even for existing tokens.
+    // Re-read ownership even for existing tokens.
     return this.proxy(target, userId, await this.credentials(userId, playlistId));
   }
 
@@ -86,10 +86,9 @@ export class StreamProxy {
   }
 
   private async upstream(target: string, userId: string, credentials: PlaylistCredentials) {
-    const hosts = [new URL(credentials.serverUrl).hostname, ...credentials.allowedCdnHosts];
     const signal = AbortSignal.timeout(TIMEOUT_MS);
     for (let hop = 0; hop <= 5; hop++) {
-      const url = streamTarget(target, hosts); // Before every fetch, never after following.
+      const url = streamTarget(target);
       const key = this.cookieKey(userId, credentials.id, url.hostname);
       const cookies = [...(this.cookies.get(key) ?? [])]
         .map(([name, value]) => `${name}=${value}`)
@@ -126,13 +125,13 @@ export class StreamProxy {
         await response.body?.cancel();
         error(502, `Stream server returned ${response.status}`);
       }
-      return { response, url, hosts };
+      return { response, url };
     }
     error(502, "Too many stream redirects");
   }
 
   private async proxy(target: string, userId: string, credentials: PlaylistCredentials) {
-    const { response, url, hosts } = await this.upstream(target, userId, credentials);
+    const { response, url } = await this.upstream(target, userId, credentials);
     const contentType = response.headers.get("content-type") ?? "";
     const manifest =
       /mpegurl/i.test(contentType) ||
@@ -155,7 +154,7 @@ export class StreamProxy {
       } catch {
         error(502, "Invalid manifest URI");
       }
-      streamTarget(resolved.href, hosts);
+      streamTarget(resolved.href);
       const token = encrypt(
         JSON.stringify({ url: resolved.href, userId, playlistId: credentials.id }),
       );

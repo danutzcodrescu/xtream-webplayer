@@ -1,10 +1,15 @@
 import { createServer } from "node:http";
 import { test, expect } from "@playwright/test";
 
-test("setup and login work; search plays through EPG outages; CDN settings persist", async ({
+test("setup and login work; playback survives EPG outages and cross-host redirects", async ({
   page,
 }) => {
   let epgUnavailable = false;
+  let epgRateLimited = false;
+  let rateLimitedRequests = 0;
+  let shortEpgRequests = 0;
+  let providerPort = 0;
+  let crossHostRedirects = 0;
   // 87 silent AAC-LC frames (1024 samples each at 44.1 kHz), about two seconds.
   // Keep playback fixtures local and deterministic, without an ffmpeg dependency.
   const audio = Buffer.concat(
@@ -22,6 +27,12 @@ test("setup and login work; search plays through EPG outages; CDN settings persi
   const provider = createServer((request, response) => {
     const url = new URL(request.url!, "http://fixture.test");
     if (url.pathname.startsWith("/live/")) {
+      if (request.headers.host === `localhost:${providerPort}`) {
+        crossHostRedirects++;
+        response.writeHead(302, { Location: `http://127.0.0.1:${providerPort}${request.url}` });
+        response.end();
+        return;
+      }
       if (url.pathname.endsWith(".aac")) {
         response.setHeader("Content-Type", "audio/aac");
         response.end(audio);
@@ -37,6 +48,16 @@ test("setup and login work; search plays through EPG outages; CDN settings persi
       return;
     }
     response.setHeader("Content-Type", "application/json");
+    if (url.searchParams.get("action") === "get_short_epg") shortEpgRequests++;
+    if (
+      epgRateLimited &&
+      ["get_simple_data_table", "get_short_epg"].includes(url.searchParams.get("action") ?? "")
+    ) {
+      rateLimitedRequests++;
+      response.writeHead(429, { "Retry-After": "60" });
+      response.end(JSON.stringify({ message: "Rate limited" }));
+      return;
+    }
     if (
       epgUnavailable &&
       ["get_simple_data_table", "get_short_epg"].includes(url.searchParams.get("action") ?? "")
@@ -89,6 +110,7 @@ test("setup and login work; search plays through EPG outages; CDN settings persi
   await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
   const address = provider.address();
   if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  providerPort = address.port;
   const pageErrors: string[] = [];
   let playlistId: string | undefined;
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -117,7 +139,7 @@ test("setup and login work; search plays through EPG outages; CDN settings persi
     const created = await page.request.post("/api/playlists", {
       data: {
         name: "Fixture Playlist",
-        serverUrl: `http://127.0.0.1:${address.port}`,
+        serverUrl: `http://localhost:${address.port}`,
         xtreamUsername: "fixture",
         xtreamPassword: "fixture",
       },
@@ -167,20 +189,36 @@ test("setup and login work; search plays through EPG outages; CDN settings persi
       .poll(() => page.locator("video").evaluate((video: HTMLVideoElement) => video.currentTime))
       .toBeGreaterThan(0.2);
 
-    await page.goto("/settings");
-    await page.getByLabel("Allowed CDN hosts", { exact: true }).fill("*.invalid.test");
-    await expect(page.getByLabel("Allowed CDN hosts", { exact: true })).toHaveValue(
-      "*.invalid.test",
-    );
-    await page.getByRole("button", { name: "Save hosts", exact: true }).click();
-    await expect(page.getByRole("alert")).toContainText("exact CDN hostnames");
-    await page.getByLabel("Allowed CDN hosts", { exact: true }).fill("cdn.fixture.test");
-    await page.getByRole("button", { name: "Save hosts", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Save hosts", exact: true })).toBeEnabled();
+    // A real provider 429 must pause metadata without blocking playback of visible Channels.
+    // Warm interactive metadata before throttling; cached reads need no provider budget.
+    await page.getByPlaceholder("Search channels…").fill("Target Sport");
+    await page.request.put(`/api/playlists/${playlistId}`, { data: { name: "Fixture Playlist" } });
+    expect((await page.request.get(`/api/categories?playlistId=${playlistId}`)).ok()).toBe(true);
+    expect(
+      (await page.request.get(`/api/channels?playlistId=${playlistId}&categoryId=news`)).ok(),
+    ).toBe(true);
+    epgRateLimited = true;
     await page.reload();
-    await expect(page.getByLabel("Allowed CDN hosts", { exact: true })).toHaveValue(
-      "cdn.fixture.test",
+    await expect(page.getByRole("status")).toContainText("Provider busy or unavailable");
+    const throttledPlayback = page.waitForResponse(
+      (response) => response.url().includes("/api/stream?") && response.status() === 200,
     );
+    await page.getByTitle("news 1", { exact: true }).click();
+    await throttledPlayback;
+    await expect
+      .poll(() => page.locator("video").evaluate((video: HTMLVideoElement) => video.currentTime))
+      .toBeGreaterThan(0.2);
+    expect(rateLimitedRequests).toBeGreaterThan(0);
+    expect(rateLimitedRequests).toBeLessThanOrEqual(2);
+    expect(shortEpgRequests).toBe(0);
+    expect(crossHostRedirects).toBeGreaterThan(0);
+
+    await page.goto("/settings");
+    await expect(page.getByRole("heading", { name: "Playlists", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Allowed CDN hosts")).toHaveCount(0);
+    await page.getByRole("button", { name: "Add Playlist", exact: true }).click();
+    await expect(page.getByLabel("Server URL", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Allowed CDN hosts")).toHaveCount(0);
     expect(pageErrors).toEqual([]);
   } finally {
     try {
